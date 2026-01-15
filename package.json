@@ -279,6 +279,12 @@
           "enum": ["auto", "always", "never"],
           "default": "auto",
           "description": "Allow creating blank issues without a template. 'auto' respects the repo's .github/ISSUE_TEMPLATE/config.yml setting."
+        },
+        "ghProjects.defaultIssueTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Default issue template name to use when creating new issues (e.g., 'bug_report', 'feature_request'). Leave empty to show template picker.",
+          "examples": ["bug_report", "feature_request", "custom_template"]
         }
       }
     }
