@@ -9,6 +9,7 @@ import {
     generateBranchName,
 } from './git-utils';
 import type { NormalizedProjectItem, ProjectWithViews } from './types';
+import { getBranchLinker } from './extension';
 
 export interface StartWorkingContext {
     item: NormalizedProjectItem;
@@ -62,6 +63,8 @@ export async function executeStartWorking(
         if (action === 'Checkout existing branch') {
             try {
                 await checkoutBranch(branchName);
+                // Auto-link the branch to this issue
+                await linkBranchToIssue(branchName, item);
                 vscode.window.showInformationMessage(`Switched to branch: ${branchName}`);
             } catch (error) {
                 vscode.window.showErrorMessage(`Failed to checkout branch: ${error}`);
@@ -74,6 +77,8 @@ export async function executeStartWorking(
     // Create the new branch
     try {
         await createBranch(branchName);
+        // Auto-link the branch to this issue
+        await linkBranchToIssue(branchName, item);
         vscode.window.showInformationMessage(`Created and switched to branch: ${branchName}`);
     } catch (error) {
         vscode.window.showErrorMessage(`Failed to create branch: ${error}`);
@@ -223,5 +228,22 @@ async function updateItemStatus(
         }
     } catch (error) {
         vscode.window.showWarningMessage(`Failed to update status: ${error}`);
+    }
+}
+
+/**
+ * Link a branch to an issue using the BranchLinker
+ */
+async function linkBranchToIssue(branchName: string, item: NormalizedProjectItem): Promise<void> {
+    if (!item.number) {
+        return; // Can't link without issue number
+    }
+
+    try {
+        const branchLinker = getBranchLinker();
+        await branchLinker.linkBranch(branchName, item.number, item.title, item.id);
+    } catch (error) {
+        // Non-fatal - just log it
+        console.warn('Failed to auto-link branch to issue:', error);
     }
 }

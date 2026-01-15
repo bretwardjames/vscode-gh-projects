@@ -39,8 +39,8 @@ export interface ProjectV2View {
     name: string;
     number: number;
     layout: 'BOARD_LAYOUT' | 'TABLE_LAYOUT' | 'ROADMAP_LAYOUT';
-    /** The field used for grouping (columns in board view) */
-    groupByFields: {
+    /** The field used for grouping (columns in board view) - may not be available due to API limitations */
+    groupByFields?: {
         nodes: Array<{
             __typename: string;
             id: string;
@@ -213,6 +213,21 @@ export interface UserProjectItemsResponse {
 /**
  * Parsed/normalized project item for display in the tree view
  */
+export interface LabelInfo {
+    name: string;
+    color: string | null;
+}
+
+export interface FieldInfo {
+    value: string;
+    color: string | null;
+}
+
+export interface AssigneeInfo {
+    login: string;
+    avatarUrl: string | null;
+}
+
 export interface NormalizedProjectItem {
     id: string;
     title: string;
@@ -221,9 +236,11 @@ export interface NormalizedProjectItem {
     url: string | null;
     number: number | null;
     repository: string | null;
-    assignees: string[];
+    assignees: AssigneeInfo[];
+    labels: LabelInfo[];
     state: 'open' | 'closed' | 'merged' | null;
-    fields: Map<string, string>;
+    fields: Map<string, FieldInfo>;
+    issueType: string | null;
 }
 
 /**

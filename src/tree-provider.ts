@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { GitHubAPI } from './github-api';
+import type { BranchLinker } from './branch-linker';
 import type {
     NormalizedProjectItem,
     ProjectWithViews,
@@ -7,10 +8,12 @@ import type {
 } from './types';
 
 /**
- * Tree element types - mirrors GitHub's hierarchy:
- * Project → View → Column → Item
+ * Tree element types - "My Stuff" hierarchy:
+ * Project → Status → Item
+ *
+ * (Use Planning Mode for full View → Column hierarchy)
  */
-export type TreeElement = ProjectNode | ViewNode | ColumnNode | ItemNode | MessageNode;
+export type TreeElement = ProjectNode | ViewNode | StatusGroupNode | ColumnNode | ItemNode | MessageNode;
 
 export class ProjectNode {
     readonly type = 'project' as const;
@@ -21,6 +24,15 @@ export class ViewNode {
     readonly type = 'view' as const;
     constructor(
         public readonly view: ProjectV2View,
+        public readonly project: ProjectWithViews
+    ) {}
+}
+
+export class StatusGroupNode {
+    readonly type = 'statusGroup' as const;
+    constructor(
+        public readonly status: string,
+        public readonly items: NormalizedProjectItem[],
         public readonly project: ProjectWithViews
     ) {}
 }
@@ -53,6 +65,105 @@ export class MessageNode {
 }
 
 /**
+ * Parse and apply GitHub Projects view filter
+ */
+function applyViewFilter(
+    items: NormalizedProjectItem[],
+    filter: string | null | undefined,
+    currentUser: string | null
+): NormalizedProjectItem[] {
+    if (!filter || filter.trim() === '') {
+        return items;
+    }
+
+    // Parse filter string into conditions
+    // Format: "field:value" or "-field:value" for negation
+    // Multiple values: "field:value1,value2"
+    const conditions: Array<{
+        field: string;
+        values: string[];
+        negate: boolean;
+    }> = [];
+
+    // Split by spaces but keep quoted strings together
+    const parts = filter.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
+
+    for (const part of parts) {
+        const negate = part.startsWith('-');
+        const cleanPart = negate ? part.slice(1) : part;
+
+        const colonIndex = cleanPart.indexOf(':');
+        if (colonIndex === -1) continue;
+
+        const field = cleanPart.slice(0, colonIndex).toLowerCase();
+        const valueStr = cleanPart.slice(colonIndex + 1).replace(/"/g, '');
+        const values = valueStr.split(',').map((v) => v.trim().toLowerCase());
+
+        conditions.push({ field, values, negate });
+    }
+
+    return items.filter((item) => {
+        for (const condition of conditions) {
+            let matches = false;
+
+            switch (condition.field) {
+                case 'assignee':
+                    if (condition.values.includes('@me')) {
+                        matches = currentUser ? item.assignees.some((a) => a.login === currentUser) : false;
+                    } else {
+                        matches = condition.values.some((v) =>
+                            item.assignees.some((a) => a.login.toLowerCase() === v)
+                        );
+                    }
+                    break;
+
+                case 'status':
+                    matches = condition.values.some(
+                        (v) => item.status?.toLowerCase() === v
+                    );
+                    break;
+
+                case 'type':
+                    matches = condition.values.includes(item.type);
+                    break;
+
+                case 'state':
+                    matches = condition.values.includes(item.state || '');
+                    break;
+
+                case 'no':
+                    // Handle "no:assignee", "no:status", etc.
+                    if (condition.values.includes('assignee')) {
+                        matches = item.assignees.length === 0;
+                    } else if (condition.values.includes('status')) {
+                        matches = !item.status;
+                    }
+                    break;
+
+                default:
+                    // Check custom fields
+                    const fieldInfo = item.fields.get(condition.field);
+                    matches = condition.values.some(
+                        (v) => fieldInfo?.value?.toLowerCase() === v
+                    );
+            }
+
+            // Apply negation
+            if (condition.negate) {
+                matches = !matches;
+            }
+
+            // All conditions must match (AND logic)
+            if (!matches) {
+                return false;
+            }
+        }
+
+        return true;
+    });
+}
+
+/**
  * Main tree provider that shows GitHub Projects with their actual views
  * Mirrors the GitHub UI: Projects → Views → Columns → Items
  */
@@ -64,8 +175,13 @@ export class ProjectBoardProvider implements vscode.TreeDataProvider<TreeElement
     private projectItems: Map<string, NormalizedProjectItem[]> = new Map();
     private loading = false;
     private selectedViewId: string | null = null;
+    private branchLinker: BranchLinker | null = null;
 
     constructor(private api: GitHubAPI) {}
+
+    setBranchLinker(linker: BranchLinker): void {
+        this.branchLinker = linker;
+    }
 
     refresh(): void {
         this._onDidChangeTreeData.fire(undefined);
@@ -93,10 +209,8 @@ export class ProjectBoardProvider implements vscode.TreeDataProvider<TreeElement
         const config = vscode.workspace.getConfiguration('ghProjects');
         const assignedToMe = config.get<boolean>('showOnlyAssignedToMe', true);
 
-        // Find the groupBy field name from the first board view
-        const boardView = project.views.find((v) => v.layout === 'BOARD_LAYOUT');
-        const groupByField = boardView?.groupByFields.nodes[0];
-        const statusFieldName = groupByField?.name || 'Status';
+        // Default to "Status" - most projects use this name
+        const statusFieldName = 'Status';
 
         const items = await this.api.getProjectItems(project.id, {
             assignedToMe,
@@ -113,6 +227,8 @@ export class ProjectBoardProvider implements vscode.TreeDataProvider<TreeElement
                 return this.createProjectTreeItem(element);
             case 'view':
                 return this.createViewTreeItem(element);
+            case 'statusGroup':
+                return this.createStatusGroupTreeItem(element);
             case 'column':
                 return this.createColumnTreeItem(element);
             case 'item':
@@ -151,36 +267,17 @@ export class ProjectBoardProvider implements vscode.TreeDataProvider<TreeElement
             return this.projects.map((p) => new ProjectNode(p));
         }
 
-        // Project level - show views
+        // Project level - "My Stuff" mode: show status groups with assigned items
         if (element.type === 'project') {
-            const views = element.project.views;
-            if (views.length === 0) {
-                return [new MessageNode('No views configured')];
-            }
-
-            // Prioritize board views, but show all
-            const sorted = [...views].sort((a, b) => {
-                if (a.layout === 'BOARD_LAYOUT' && b.layout !== 'BOARD_LAYOUT') return -1;
-                if (b.layout === 'BOARD_LAYOUT' && a.layout !== 'BOARD_LAYOUT') return 1;
-                return a.number - b.number;
-            });
-
-            return sorted.map((v) => new ViewNode(v, element.project));
+            return await this.getMyStuffForProject(element.project);
         }
 
-        // View level - show columns (for board) or items (for table)
-        if (element.type === 'view') {
-            const items = await this.loadProjectItems(element.project);
-
-            if (element.view.layout === 'BOARD_LAYOUT') {
-                return this.getColumnsForView(element.view, element.project, items);
-            } else {
-                // For table/roadmap views, just show items directly
-                return items.map((item) => new ItemNode(item, element.project));
-            }
+        // Status group level - show items
+        if (element.type === 'statusGroup') {
+            return element.items.map((item) => new ItemNode(item, element.project));
         }
 
-        // Column level - show items in that column
+        // Column level (legacy support for view detail)
         if (element.type === 'column') {
             return element.items.map((item) => new ItemNode(item, element.project));
         }
@@ -189,47 +286,109 @@ export class ProjectBoardProvider implements vscode.TreeDataProvider<TreeElement
     }
 
     /**
-     * Get columns for a board view based on its groupBy field
+     * "My Stuff" view - shows items assigned to current user grouped by status
      */
-    private getColumnsForView(
+    private async getMyStuffForProject(project: ProjectWithViews): Promise<TreeElement[]> {
+        const config = vscode.workspace.getConfiguration('ghProjects');
+        const hiddenStatuses = config.get<string[]>('myStuffHiddenStatuses', ['Done', 'Closed']);
+
+        // Always filter to current user's items in "My Stuff" view
+        const allItems = await this.api.getProjectItems(project.id, {
+            assignedToMe: true,
+            statusFieldName: 'Status',
+        });
+
+        // Cache for other uses
+        this.projectItems.set(project.id, allItems);
+
+        // Filter out hidden statuses
+        const visibleItems = allItems.filter((item) => {
+            const status = item.status || 'No Status';
+            return !hiddenStatuses.some(
+                (h) => h.toLowerCase() === status.toLowerCase()
+            );
+        });
+
+        if (visibleItems.length === 0) {
+            if (allItems.length > 0) {
+                return [new MessageNode(`All ${allItems.length} items are in hidden statuses`)];
+            }
+            return [new MessageNode('No items assigned to you')];
+        }
+
+        // Get status order from project
+        const statusOrder = await this.api.getProjectStatusOptions(project.id);
+
+        // Group items by status
+        const itemsByStatus = new Map<string, NormalizedProjectItem[]>();
+        for (const item of visibleItems) {
+            const status = item.status || 'No Status';
+            if (!itemsByStatus.has(status)) {
+                itemsByStatus.set(status, []);
+            }
+            itemsByStatus.get(status)!.push(item);
+        }
+
+        // Create status groups in order
+        const groups: StatusGroupNode[] = [];
+
+        for (const status of statusOrder) {
+            const items = itemsByStatus.get(status);
+            if (items && items.length > 0) {
+                groups.push(new StatusGroupNode(status, items, project));
+                itemsByStatus.delete(status);
+            }
+        }
+
+        // Add any remaining statuses not in the order
+        for (const [status, items] of itemsByStatus) {
+            if (items.length > 0) {
+                groups.push(new StatusGroupNode(status, items, project));
+            }
+        }
+
+        return groups;
+    }
+
+    /**
+     * Get columns for a board view - uses actual status order from project configuration
+     */
+    private async getColumnsForView(
         view: ProjectV2View,
         project: ProjectWithViews,
         items: NormalizedProjectItem[]
-    ): ColumnNode[] {
-        const groupByField = view.groupByFields.nodes[0];
-        if (!groupByField) {
-            // No groupBy - show all items in one column
-            return [new ColumnNode('All Items', undefined, items, view, project)];
-        }
-
-        const fieldName = groupByField.name;
-        const columns: ColumnNode[] = [];
-
-        // Get the field options (these define the column order)
-        const options = 'options' in groupByField && groupByField.options
-            ? groupByField.options
-            : [];
-
-        // Group items by their value for this field
+    ): Promise<ColumnNode[]> {
+        // Group items by their status value
         const itemsByColumn = new Map<string, NormalizedProjectItem[]>();
 
         for (const item of items) {
-            const columnValue = item.fields.get(fieldName) || 'No Status';
+            const columnValue = item.status || 'No Status';
             if (!itemsByColumn.has(columnValue)) {
                 itemsByColumn.set(columnValue, []);
             }
             itemsByColumn.get(columnValue)!.push(item);
         }
 
-        // Create columns in the order defined by field options
-        for (const option of options) {
-            const columnItems = itemsByColumn.get(option.name) || [];
-            columns.push(new ColumnNode(option.name, option.color, columnItems, view, project));
-            itemsByColumn.delete(option.name);
+        // Get actual status order from the project (matches GitHub's configuration)
+        const statusOrder = await this.api.getProjectStatusOptions(project.id);
+
+        // Create columns from the values we found
+        const columns: ColumnNode[] = [];
+        const config = vscode.workspace.getConfiguration('ghProjects');
+        const showEmptyColumns = config.get<boolean>('showEmptyColumns', false);
+
+        // Add columns in project's configured order
+        for (const status of statusOrder) {
+            const columnItems = itemsByColumn.get(status) || [];
+            if (columnItems.length > 0 || showEmptyColumns) {
+                columns.push(new ColumnNode(status, undefined, columnItems, view, project));
+            }
+            itemsByColumn.delete(status);
         }
 
-        // Add any remaining columns (items with values not in options)
-        for (const [name, columnItems] of itemsByColumn) {
+        // Add any remaining columns that aren't in the status field (shouldn't happen often)
+        const remaining = Array.from(itemsByColumn.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+        for (const [name, columnItems] of remaining) {
             columns.push(new ColumnNode(name, undefined, columnItems, view, project));
         }
 
@@ -244,13 +403,18 @@ export class ProjectBoardProvider implements vscode.TreeDataProvider<TreeElement
         );
         item.iconPath = new vscode.ThemeIcon('project');
         item.contextValue = 'project';
-        item.description = `${node.project.views.length} view${node.project.views.length !== 1 ? 's' : ''}`;
 
+        // Show "My Stuff" indicator - actual count will be shown in status groups
+        item.description = 'My Items';
+
+        const tooltip = new vscode.MarkdownString();
+        tooltip.appendMarkdown(`**${node.project.title}**\n\n`);
         if (node.project.shortDescription) {
-            item.tooltip = new vscode.MarkdownString(
-                `**${node.project.title}**\n\n${node.project.shortDescription}`
-            );
+            tooltip.appendMarkdown(`${node.project.shortDescription}\n\n`);
         }
+        tooltip.appendMarkdown(`*Items assigned to you*\n\n`);
+        tooltip.appendMarkdown(`Use **Open Planning Board** for full kanban view`);
+        item.tooltip = tooltip;
 
         return item;
     }
@@ -276,13 +440,53 @@ export class ProjectBoardProvider implements vscode.TreeDataProvider<TreeElement
         item.description = layoutNames[node.view.layout] || node.view.layout;
         item.contextValue = 'view';
 
-        // Show groupBy info in tooltip
-        const groupBy = node.view.groupByFields.nodes[0];
-        if (groupBy) {
+        // Show groupBy info in tooltip (if available)
+        const groupBy = node.view.groupByFields?.nodes?.[0];
+        if (groupBy?.name) {
             item.tooltip = `Grouped by: ${groupBy.name}`;
         }
 
         return item;
+    }
+
+    private createStatusGroupTreeItem(node: StatusGroupNode): vscode.TreeItem {
+        const item = new vscode.TreeItem(
+            node.status,
+            node.items.length > 0
+                ? vscode.TreeItemCollapsibleState.Expanded
+                : vscode.TreeItemCollapsibleState.None
+        );
+
+        item.description = `${node.items.length}`;
+        item.contextValue = 'statusGroup';
+        item.iconPath = this.getStatusIcon(node.status);
+
+        return item;
+    }
+
+    private getStatusIcon(status: string): vscode.ThemeIcon {
+        const nameLower = status.toLowerCase();
+
+        if (nameLower.includes('done') || nameLower.includes('complete')) {
+            return new vscode.ThemeIcon('pass-filled', new vscode.ThemeColor('charts.green'));
+        }
+        if (nameLower.includes('progress') || nameLower.includes('doing') || nameLower.includes('working')) {
+            return new vscode.ThemeIcon('play-circle', new vscode.ThemeColor('charts.yellow'));
+        }
+        if (nameLower.includes('review')) {
+            return new vscode.ThemeIcon('eye', new vscode.ThemeColor('charts.purple'));
+        }
+        if (nameLower.includes('block')) {
+            return new vscode.ThemeIcon('error', new vscode.ThemeColor('charts.red'));
+        }
+        if (nameLower.includes('kill')) {
+            return new vscode.ThemeIcon('target', new vscode.ThemeColor('charts.orange'));
+        }
+        if (nameLower.includes('todo') || nameLower.includes('backlog') || nameLower.includes('ready')) {
+            return new vscode.ThemeIcon('circle-outline', new vscode.ThemeColor('charts.blue'));
+        }
+
+        return new vscode.ThemeIcon('circle-filled');
     }
 
     private createColumnTreeItem(node: ColumnNode): vscode.TreeItem {
@@ -333,6 +537,9 @@ export class ProjectBoardProvider implements vscode.TreeDataProvider<TreeElement
         if (nameLower.includes('block')) {
             return new vscode.ThemeIcon('error', new vscode.ThemeColor('charts.red'));
         }
+        if (nameLower.includes('kill')) {
+            return new vscode.ThemeIcon('target', new vscode.ThemeColor('charts.orange'));
+        }
 
         return new vscode.ThemeIcon(
             icon,
@@ -344,12 +551,23 @@ export class ProjectBoardProvider implements vscode.TreeDataProvider<TreeElement
         const { item } = node;
         const treeItem = new vscode.TreeItem(item.title, vscode.TreeItemCollapsibleState.None);
 
-        // Description: repo#number
+        // Check for linked branch
+        const linkedBranch = this.branchLinker?.getBranchForIssue(item.id) || null;
+
+        // Description: repo#number + branch indicator
+        let description = '';
         if (item.repository && item.number) {
-            treeItem.description = `${item.repository}#${item.number}`;
+            description = `${item.repository}#${item.number}`;
         } else if (item.number) {
-            treeItem.description = `#${item.number}`;
+            description = `#${item.number}`;
         }
+
+        // Add branch indicator with git-branch icon
+        if (linkedBranch) {
+            description += description ? ` $(git-branch) ${linkedBranch}` : `$(git-branch) ${linkedBranch}`;
+        }
+
+        treeItem.description = description;
 
         // Icon based on type and state
         treeItem.iconPath = this.getItemIcon(item);
@@ -362,16 +580,17 @@ export class ProjectBoardProvider implements vscode.TreeDataProvider<TreeElement
         if (item.assignees.length > 0) {
             md.appendMarkdown(`Assignees: ${item.assignees.join(', ')}\n\n`);
         }
+        if (linkedBranch) {
+            md.appendMarkdown(`🌿 Branch: \`${linkedBranch}\`\n\n`);
+        }
         treeItem.tooltip = md;
 
-        // Click to open in browser
-        if (item.url) {
-            treeItem.command = {
-                command: 'ghProjects.openItem',
-                title: 'Open in Browser',
-                arguments: [item.url],
-            };
-        }
+        // Click to open detail panel
+        treeItem.command = {
+            command: 'ghProjects.showItemDetail',
+            title: 'Show Details',
+            arguments: [node],
+        };
 
         return treeItem;
     }

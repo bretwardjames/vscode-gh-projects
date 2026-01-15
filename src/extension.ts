@@ -1,13 +1,18 @@
 import * as vscode from 'vscode';
 import { GitHubAPI } from './github-api';
-import { ProjectBoardProvider, ItemNode } from './tree-provider';
+import { ProjectBoardProvider, ItemNode, ViewNode } from './tree-provider';
 import { detectRepository, type RepoInfo } from './repo-detector';
 import { StatusBarManager, showAccessHelp } from './status-bar';
 import { executeStartWorking } from './start-working';
+import { IssueDetailPanel } from './issue-detail-panel';
+import { PlanningBoardPanel } from './planning-board';
+import { executePROpened } from './pr-workflow';
+import { BranchLinker } from './branch-linker';
 
 let api: GitHubAPI;
 let boardProvider: ProjectBoardProvider;
 let statusBar: StatusBarManager;
+let branchLinker: BranchLinker;
 let currentRepo: RepoInfo | null = null;
 
 export async function activate(context: vscode.ExtensionContext) {
@@ -17,6 +22,11 @@ export async function activate(context: vscode.ExtensionContext) {
     api = new GitHubAPI();
     boardProvider = new ProjectBoardProvider(api);
     statusBar = new StatusBarManager();
+    branchLinker = new BranchLinker(context);
+
+    // Connect branch linker to board provider for linked branch indicators
+    boardProvider.setBranchLinker(branchLinker);
+
     statusBar.show();
 
     // Register tree view - single unified view showing project boards
@@ -68,7 +78,84 @@ function registerCommands(context: vscode.ExtensionContext) {
             }
         }),
 
+        vscode.commands.registerCommand('ghProjects.showItemDetail', async (node: unknown) => {
+            if (node instanceof ItemNode) {
+                await IssueDetailPanel.show(api, node.item, node.project);
+            }
+        }),
+
+        vscode.commands.registerCommand('ghProjects.changeItemStatus', async (node: unknown) => {
+            if (node instanceof ItemNode) {
+                const statusOptions = await api.getProjectStatusOptions(node.project.id);
+                if (statusOptions.length === 0) {
+                    vscode.window.showErrorMessage('No status options found for this project');
+                    return;
+                }
+
+                const selected = await vscode.window.showQuickPick(statusOptions, {
+                    placeHolder: 'Select new status',
+                    title: `Move "${node.item.title}" to...`,
+                });
+
+                if (selected) {
+                    const success = await api.updateItemStatusByName(
+                        node.project.id,
+                        node.item.id,
+                        selected
+                    );
+
+                    if (success) {
+                        vscode.window.showInformationMessage(`Status changed to "${selected}"`);
+                        boardProvider.refresh();
+                    } else {
+                        vscode.window.showErrorMessage('Failed to update status');
+                    }
+                }
+            }
+        }),
+
         vscode.commands.registerCommand('ghProjects.showAccessHelp', showAccessHelp),
+
+        vscode.commands.registerCommand('ghProjects.hideView', async (node: unknown) => {
+            if (node instanceof ViewNode) {
+                const config = vscode.workspace.getConfiguration('ghProjects');
+                const hiddenViews = config.get<string[]>('hiddenViews', []);
+
+                if (!hiddenViews.includes(node.view.name)) {
+                    hiddenViews.push(node.view.name);
+                    await config.update('hiddenViews', hiddenViews, vscode.ConfigurationTarget.Workspace);
+                    boardProvider.refresh();
+                    vscode.window.showInformationMessage(`View "${node.view.name}" hidden. Use "Show Hidden Views" to restore.`);
+                }
+            }
+        }),
+
+        vscode.commands.registerCommand('ghProjects.showHiddenViews', async () => {
+            const config = vscode.workspace.getConfiguration('ghProjects');
+            const hiddenViews = config.get<string[]>('hiddenViews', []);
+
+            if (hiddenViews.length === 0) {
+                vscode.window.showInformationMessage('No hidden views');
+                return;
+            }
+
+            const selected = await vscode.window.showQuickPick(
+                hiddenViews.map((name) => ({ label: name, picked: false })),
+                {
+                    canPickMany: true,
+                    placeHolder: 'Select views to show again',
+                    title: 'Hidden Views',
+                }
+            );
+
+            if (selected && selected.length > 0) {
+                const toShow = selected.map((s) => s.label);
+                const newHidden = hiddenViews.filter((v) => !toShow.includes(v));
+                await config.update('hiddenViews', newHidden, vscode.ConfigurationTarget.Workspace);
+                boardProvider.refresh();
+                vscode.window.showInformationMessage(`Restored ${selected.length} view(s)`);
+            }
+        }),
 
         vscode.commands.registerCommand('ghProjects.configureProject', async () => {
             await vscode.commands.executeCommand('workbench.action.openSettings', 'ghProjects');
@@ -87,7 +174,7 @@ function registerCommands(context: vscode.ExtensionContext) {
             output.appendLine('=== GitHub Projects Authentication Debug ===\n');
 
             try {
-                const session = await vscode.authentication.getSession('github', ['read:project', 'repo'], {
+                const session = await vscode.authentication.getSession('github', ['project', 'repo'], {
                     createIfNone: false,
                 });
 
@@ -97,7 +184,7 @@ function registerCommands(context: vscode.ExtensionContext) {
                 }
 
                 output.appendLine(`✅ Authenticated as: ${session.account.label}`);
-                output.appendLine(`   Scopes requested: read:project, repo`);
+                output.appendLine(`   Scopes requested: project, repo`);
                 output.appendLine(`   Session ID: ${session.id.substring(0, 8)}...`);
                 output.appendLine('');
 
@@ -207,8 +294,283 @@ function registerCommands(context: vscode.ExtensionContext) {
             } else {
                 vscode.window.showErrorMessage('Please select an issue or PR to start working on');
             }
+        }),
+
+        vscode.commands.registerCommand('ghProjects.openPlanningMode', async () => {
+            if (!api.isAuthenticated) {
+                const signIn = await vscode.window.showWarningMessage(
+                    'Please sign in to GitHub to use Planning Mode',
+                    'Sign In'
+                );
+                if (signIn) {
+                    await vscode.commands.executeCommand('ghProjects.signIn');
+                }
+                return;
+            }
+
+            if (!currentRepo) {
+                vscode.window.showWarningMessage('No repository detected. Open a folder with a git repository.');
+                return;
+            }
+
+            await vscode.window.withProgress(
+                {
+                    location: vscode.ProgressLocation.Notification,
+                    title: 'Opening Planning Board...',
+                    cancellable: false,
+                },
+                async () => {
+                    const projects = await api.getProjectsWithViews(currentRepo!);
+                    if (projects.length === 0) {
+                        vscode.window.showWarningMessage('No GitHub Projects found for this repository.');
+                        return;
+                    }
+                    await PlanningBoardPanel.show(api, projects);
+                }
+            );
+        }),
+
+        vscode.commands.registerCommand('ghProjects.configurePlanningViews', async () => {
+            await vscode.commands.executeCommand(
+                'workbench.action.openSettings',
+                'ghProjects.planningModeViews'
+            );
+        }),
+
+        vscode.commands.registerCommand('ghProjects.prOpened', async () => {
+            if (!api.isAuthenticated) {
+                vscode.window.showWarningMessage('Please sign in to GitHub first');
+                return;
+            }
+
+            if (!currentRepo) {
+                vscode.window.showWarningMessage('No repository detected');
+                return;
+            }
+
+            const projects = await api.getProjectsWithViews(currentRepo);
+            const success = await executePROpened(api, projects);
+            if (success) {
+                boardProvider.refresh();
+            }
+        }),
+
+        vscode.commands.registerCommand('ghProjects.newIssue', async () => {
+            if (!api.isAuthenticated) {
+                const signIn = await vscode.window.showWarningMessage(
+                    'Please sign in to GitHub to create issues',
+                    'Sign In'
+                );
+                if (signIn) {
+                    await vscode.commands.executeCommand('ghProjects.signIn');
+                }
+                return;
+            }
+
+            if (!currentRepo) {
+                vscode.window.showWarningMessage('No repository detected. Open a folder with a git repository.');
+                return;
+            }
+
+            // Open planning board with new issue form
+            const projects = await api.getProjectsWithViews(currentRepo);
+            if (projects.length === 0) {
+                vscode.window.showWarningMessage('No GitHub Projects found for this repository.');
+                return;
+            }
+
+            await PlanningBoardPanel.show(api, projects);
+            // Trigger the new issue form after the panel is shown
+            setTimeout(() => {
+                PlanningBoardPanel.currentPanel?.triggerNewIssue();
+            }, 500);
+        }),
+
+        vscode.commands.registerCommand('ghProjects.linkBranch', async (node: unknown) => {
+            if (!(node instanceof ItemNode)) {
+                vscode.window.showErrorMessage('Please select an issue to link a branch to');
+                return;
+            }
+
+            const item = node.item;
+            if (item.type !== 'issue') {
+                vscode.window.showWarningMessage('Branch linking is only available for issues');
+                return;
+            }
+
+            if (!item.number) {
+                vscode.window.showWarningMessage('Issue number not available');
+                return;
+            }
+
+            // Get current linked branch if any
+            const currentLinked = branchLinker.getBranchForIssue(item.id);
+
+            // Check current branch status
+            const { pushed, branchName: currentBranch } = await branchLinker.isCurrentBranchPushed();
+
+            // If current branch isn't pushed, offer to push it first
+            if (currentBranch && !pushed) {
+                const pushChoice = await vscode.window.showInformationMessage(
+                    `Your current branch "${currentBranch}" hasn't been pushed yet. Push it to link to this issue?`,
+                    'Push and Link',
+                    'Select Different Branch',
+                    'Cancel'
+                );
+
+                if (pushChoice === 'Cancel' || !pushChoice) {
+                    return;
+                }
+
+                if (pushChoice === 'Push and Link') {
+                    const pushResult = await vscode.window.withProgress(
+                        { location: vscode.ProgressLocation.Notification, title: 'Pushing branch...' },
+                        () => branchLinker.pushCurrentBranch()
+                    );
+
+                    if (!pushResult.success) {
+                        vscode.window.showErrorMessage(`Failed to push: ${pushResult.error}`);
+                        return;
+                    }
+
+                    // Link the just-pushed branch
+                    await branchLinker.linkBranch(currentBranch, item.number, item.title, item.id);
+                    vscode.window.showInformationMessage(
+                        `Pushed and linked branch "${currentBranch}" to #${item.number}`
+                    );
+                    boardProvider.refresh();
+                    return;
+                }
+                // Otherwise fall through to select different branch
+            }
+
+            // Fetch and show remote branches
+            await vscode.window.withProgress(
+                { location: vscode.ProgressLocation.Notification, title: 'Fetching remote branches...' },
+                () => branchLinker.getRemoteBranches() // This does a git fetch
+            );
+
+            const remoteBranches = await branchLinker.getRemoteBranches();
+            if (remoteBranches.length === 0) {
+                vscode.window.showWarningMessage('No remote branches found');
+                return;
+            }
+
+            // Build quick pick items
+            const items: vscode.QuickPickItem[] = remoteBranches.map(branch => ({
+                label: branch,
+                description: branch === currentBranch ? '(current)' :
+                             branch === currentLinked ? '(currently linked)' : undefined,
+            }));
+
+            const selected = await vscode.window.showQuickPick(items, {
+                placeHolder: `Select remote branch to link to #${item.number}: ${item.title}`,
+                title: 'Link Branch to Issue',
+            });
+
+            if (selected) {
+                await branchLinker.linkBranch(
+                    selected.label,
+                    item.number,
+                    item.title,
+                    item.id
+                );
+                vscode.window.showInformationMessage(
+                    `Linked branch "${selected.label}" to #${item.number}`
+                );
+                boardProvider.refresh();
+            }
+        }),
+
+        vscode.commands.registerCommand('ghProjects.switchToBranch', async (node: unknown) => {
+            if (!(node instanceof ItemNode)) {
+                vscode.window.showErrorMessage('Please select an issue to switch to its branch');
+                return;
+            }
+
+            const item = node.item;
+            const linkedBranch = branchLinker.getBranchForIssue(item.id);
+
+            if (!linkedBranch) {
+                // No branch linked - offer to link one or start working
+                const choice = await vscode.window.showWarningMessage(
+                    `No branch linked to #${item.number}. What would you like to do?`,
+                    'Link Existing Branch',
+                    'Start Working (Create New)',
+                    'Cancel'
+                );
+
+                if (choice === 'Link Existing Branch') {
+                    await vscode.commands.executeCommand('ghProjects.linkBranch', node);
+                } else if (choice === 'Start Working (Create New)') {
+                    await vscode.commands.executeCommand('ghProjects.startWorking', node);
+                }
+                return;
+            }
+
+            // Check if branch still exists (locally or on remote)
+            const existsLocally = await branchLinker.branchExists(linkedBranch);
+            const existsRemotely = await branchLinker.remoteBranchExists(linkedBranch);
+
+            if (!existsLocally && !existsRemotely) {
+                const relink = await vscode.window.showWarningMessage(
+                    `Branch "${linkedBranch}" no longer exists locally or on remote. Would you like to link a different branch?`,
+                    'Link Different Branch',
+                    'Cancel'
+                );
+                if (relink === 'Link Different Branch') {
+                    await vscode.commands.executeCommand('ghProjects.linkBranch', node);
+                }
+                return;
+            }
+
+            // Check if already on this branch
+            const currentBranch = await branchLinker.getCurrentBranch();
+            if (currentBranch === linkedBranch) {
+                vscode.window.showInformationMessage(`Already on branch "${linkedBranch}"`);
+                return;
+            }
+
+            // Switch to the branch
+            const result = await branchLinker.switchToBranch(linkedBranch);
+            if (result.success) {
+                vscode.window.showInformationMessage(`Switched to branch "${linkedBranch}"`);
+            } else if (result.error && result.error !== 'Cancelled by user') {
+                vscode.window.showErrorMessage(`Failed to switch branch: ${result.error}`);
+            }
+        }),
+
+        vscode.commands.registerCommand('ghProjects.unlinkBranch', async (node: unknown) => {
+            if (!(node instanceof ItemNode)) {
+                return;
+            }
+
+            const item = node.item;
+            const linkedBranch = branchLinker.getBranchForIssue(item.id);
+
+            if (!linkedBranch) {
+                vscode.window.showInformationMessage('No branch is linked to this issue');
+                return;
+            }
+
+            const confirm = await vscode.window.showWarningMessage(
+                `Unlink branch "${linkedBranch}" from #${item.number}?`,
+                'Unlink',
+                'Cancel'
+            );
+
+            if (confirm === 'Unlink') {
+                await branchLinker.unlinkByIssue(item.id);
+                vscode.window.showInformationMessage(`Unlinked branch from #${item.number}`);
+                boardProvider.refresh();
+            }
         })
     );
+}
+
+// Export branchLinker for use in other modules
+export function getBranchLinker(): BranchLinker {
+    return branchLinker;
 }
 
 async function initialize() {

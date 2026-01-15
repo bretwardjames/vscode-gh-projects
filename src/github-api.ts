@@ -26,7 +26,8 @@ export class GitHubAPI {
      */
     async authenticate(): Promise<boolean> {
         try {
-            const session = await vscode.authentication.getSession('github', ['read:project', 'repo'], {
+            // Need 'project' scope for read/write access to GitHub Projects
+            const session = await vscode.authentication.getSession('github', ['project', 'repo'], {
                 createIfNone: true,
             });
 
@@ -164,12 +165,15 @@ export class GitHubAPI {
                                 id
                                 type
                                 content {
-                                    __typename
                                     ... on Issue {
+                                        __typename
                                         title
                                         number
                                         url
                                         state
+                                        issueType {
+                                            name
+                                        }
                                         repository {
                                             name
                                             owner {
@@ -179,10 +183,18 @@ export class GitHubAPI {
                                         assignees(first: 10) {
                                             nodes {
                                                 login
+                                                avatarUrl(size: 32)
+                                            }
+                                        }
+                                        labels(first: 10) {
+                                            nodes {
+                                                name
+                                                color
                                             }
                                         }
                                     }
                                     ... on PullRequest {
+                                        __typename
                                         title
                                         number
                                         url
@@ -196,33 +208,43 @@ export class GitHubAPI {
                                         assignees(first: 10) {
                                             nodes {
                                                 login
+                                                avatarUrl(size: 32)
+                                            }
+                                        }
+                                        labels(first: 10) {
+                                            nodes {
+                                                name
+                                                color
                                             }
                                         }
                                     }
                                     ... on DraftIssue {
+                                        __typename
                                         title
                                     }
                                 }
                                 fieldValues(first: 20) {
                                     nodes {
-                                        __typename
                                         ... on ProjectV2ItemFieldSingleSelectValue {
-                                            singleSelectName: name
-                                            singleSelectField: field {
-                                                name
-                                            }
+                                            __typename
+                                            name
+                                            color
+                                            field { ... on ProjectV2SingleSelectField { name } }
                                         }
                                         ... on ProjectV2ItemFieldTextValue {
-                                            textValue: text
-                                            textField: field {
-                                                name
-                                            }
+                                            __typename
+                                            text
+                                            field { ... on ProjectV2Field { name } }
                                         }
                                         ... on ProjectV2ItemFieldIterationValue {
-                                            iterationTitle: title
-                                            iterationField: field {
-                                                name
-                                            }
+                                            __typename
+                                            title
+                                            field { ... on ProjectV2IterationField { name } }
+                                        }
+                                        ... on ProjectV2ItemFieldNumberValue {
+                                            __typename
+                                            number
+                                            field { ... on ProjectV2Field { name } }
                                         }
                                     }
                                 }
@@ -269,7 +291,7 @@ export class GitHubAPI {
         if (options.assignedToMe && this.currentUser) {
             normalized = normalized.filter(
                 (item) =>
-                    item.assignees.includes(this.currentUser!) ||
+                    item.assignees.some((a) => a.login === this.currentUser!) ||
                     item.type === 'draft' // Include drafts as they might be mine
             );
         }
@@ -312,8 +334,13 @@ export class GitHubAPI {
                             }
                             fields(first: 30) {
                                 nodes {
-                                    __typename
+                                    ... on ProjectV2Field {
+                                        __typename
+                                        id
+                                        name
+                                    }
                                     ... on ProjectV2SingleSelectField {
+                                        __typename
                                         id
                                         name
                                         options {
@@ -323,6 +350,7 @@ export class GitHubAPI {
                                         }
                                     }
                                     ... on ProjectV2IterationField {
+                                        __typename
                                         id
                                         name
                                     }
@@ -373,8 +401,8 @@ export class GitHubAPI {
                                 }
                                 fields(first: 30) {
                                     nodes {
-                                        __typename
                                         ... on ProjectV2SingleSelectField {
+                                            __typename
                                             id
                                             name
                                             options {
@@ -384,6 +412,7 @@ export class GitHubAPI {
                                             }
                                         }
                                         ... on ProjectV2IterationField {
+                                            __typename
                                             id
                                             name
                                         }
@@ -446,57 +475,12 @@ export class GitHubAPI {
                     __typename
                 }
             }
-            fields(first: 30) {
-                nodes {
-                    __typename
-                    ... on ProjectV2SingleSelectField {
-                        id
-                        name
-                        options {
-                            id
-                            name
-                            color
-                        }
-                    }
-                    ... on ProjectV2IterationField {
-                        id
-                        name
-                    }
-                }
-            }
             views(first: 20) {
                 nodes {
                     id
                     name
                     number
                     layout
-                    groupByFields: groupBy(first: 5) {
-                        nodes {
-                            __typename
-                            ... on ProjectV2SingleSelectField {
-                                id
-                                name
-                                options {
-                                    id
-                                    name
-                                    color
-                                }
-                            }
-                            ... on ProjectV2IterationField {
-                                id
-                                name
-                            }
-                        }
-                    }
-                    verticalGroupByFields: verticalGroupBy(first: 5) {
-                        nodes {
-                            __typename
-                            ... on ProjectV2SingleSelectField {
-                                id
-                                name
-                            }
-                        }
-                    }
                     filter
                 }
             }
@@ -598,14 +582,23 @@ export class GitHubAPI {
             console.log(`Org query for ${repo.owner} failed (may not be an org):`, errorMessage);
         }
 
+        // Initialize empty fields - we'll derive column info from item values instead
+        // (GitHub's GraphQL API has union type issues with the fields query)
+        for (const project of projects) {
+            if (!project.fields) {
+                project.fields = { nodes: [] };
+            }
+        }
+
         return projects;
     }
 
     /**
      * Get the column order for a board view based on the groupBy field options
+     * Note: groupByFields may not be available due to GraphQL API limitations
      */
     getViewColumns(view: ProjectV2View): Array<{ id: string; name: string; color?: string }> {
-        const groupByField = view.groupByFields.nodes[0];
+        const groupByField = view.groupByFields?.nodes?.[0];
         if (!groupByField || !('options' in groupByField) || !groupByField.options) {
             return [];
         }
@@ -669,49 +662,66 @@ export class GitHubAPI {
     /**
      * Convert raw API response to normalized format
      */
-    private normalizeItem(item: ProjectV2Item, statusFieldName: string): NormalizedProjectItem {
-        const fields = new Map<string, string>();
+    private normalizeItem(item: ProjectV2Item, _statusFieldName: string): NormalizedProjectItem {
+        const fields = new Map<string, { value: string; color: string | null }>();
         let status: string | null = null;
 
-        // Extract field values (using aliased field names from GraphQL query)
+        // Extract field values with their actual field names and colors
         for (const fieldValue of item.fieldValues.nodes) {
             if (!fieldValue) continue;
 
-            // Cast through unknown since GraphQL response uses aliased field names
             const fv = fieldValue as unknown as Record<string, unknown>;
+            const fieldDef = fv.field as { name?: string } | undefined;
+            const fieldName = fieldDef?.name || null;
 
             if (fieldValue.__typename === 'ProjectV2ItemFieldSingleSelectValue') {
-                const fieldName = (fv.singleSelectField as { name?: string })?.name;
-                const valueName = fv.singleSelectName as string;
-                if (fieldName && valueName) {
-                    fields.set(fieldName, valueName);
-                    if (fieldName.toLowerCase() === statusFieldName.toLowerCase()) {
+                const valueName = fv.name as string;
+                const color = fv.color as string | null;
+                if (valueName && fieldName) {
+                    const fieldNameLower = fieldName.toLowerCase();
+                    // Check if this is the Status field (also check for common variations)
+                    if (fieldNameLower === 'status' || fieldNameLower === 'state' || fieldNameLower === 'stage') {
                         status = valueName;
                     }
+                    fields.set(fieldNameLower, { value: valueName, color });
                 }
             } else if (fieldValue.__typename === 'ProjectV2ItemFieldTextValue') {
-                const fieldName = (fv.textField as { name?: string })?.name;
-                const textValue = fv.textValue as string;
-                if (fieldName && textValue) {
-                    fields.set(fieldName, textValue);
+                const textValue = fv.text as string;
+                if (textValue && fieldName) {
+                    fields.set(fieldName.toLowerCase(), { value: textValue, color: null });
                 }
             } else if (fieldValue.__typename === 'ProjectV2ItemFieldIterationValue') {
-                const fieldName = (fv.iterationField as { name?: string })?.name;
-                const iterationTitle = fv.iterationTitle as string;
-                if (fieldName && iterationTitle) {
-                    fields.set(fieldName, iterationTitle);
+                const iterationTitle = fv.title as string;
+                if (iterationTitle && fieldName) {
+                    fields.set(fieldName.toLowerCase(), { value: iterationTitle, color: null });
+                }
+            } else if (fieldValue.__typename === 'ProjectV2ItemFieldNumberValue') {
+                const numberValue = fv.number as number;
+                if (numberValue !== null && numberValue !== undefined && fieldName) {
+                    fields.set(fieldName.toLowerCase(), { value: String(numberValue), color: null });
                 }
             }
         }
 
         const content = item.content;
         const assignees =
-            content?.assignees?.nodes.map((a: { login: string }) => a.login) || [];
+            content?.assignees?.nodes.map((a: { login: string; avatarUrl?: string }) => ({
+                login: a.login,
+                avatarUrl: a.avatarUrl || null,
+            })) || [];
+
+        // Extract labels from issue/PR content (with colors)
+        const contentAny = content as Record<string, unknown> | null;
+        const labelsNode = contentAny?.labels as { nodes: Array<{ name: string; color: string }> } | undefined;
+        const labels = labelsNode?.nodes.map((l) => ({ name: l.name, color: l.color ? `#${l.color}` : null })) || [];
 
         let state: 'open' | 'closed' | 'merged' | null = null;
         if (content?.state) {
             state = content.state.toLowerCase() as 'open' | 'closed' | 'merged';
         }
+
+        // Extract issue type (only available on issues)
+        const issueType = (contentAny?.issueType as { name: string } | null)?.name || null;
 
         return {
             id: item.id,
@@ -724,8 +734,10 @@ export class GitHubAPI {
                 ? `${content.repository.owner.login}/${content.repository.name}`
                 : null,
             assignees,
+            labels,
             state,
             fields,
+            issueType,
         };
     }
 
@@ -810,5 +822,702 @@ export class GitHubAPI {
             fieldId: statusField.id,
             optionId: option.id,
         };
+    }
+
+    /**
+     * Update a project item's status by name (queries for field/option IDs automatically)
+     * @param projectId The project's node ID
+     * @param itemId The item's node ID
+     * @param statusName The status name to set (e.g., "In Progress", "Done")
+     */
+    async updateItemStatusByName(
+        projectId: string,
+        itemId: string,
+        statusName: string
+    ): Promise<boolean> {
+        if (!this.graphqlClient) {
+            throw new Error('Not authenticated');
+        }
+
+        // First, query the project to get status field and options
+        const query = `
+            query($projectId: ID!) {
+                node(id: $projectId) {
+                    ... on ProjectV2 {
+                        fields(first: 30) {
+                            nodes {
+                                ... on ProjectV2SingleSelectField {
+                                    __typename
+                                    id
+                                    name
+                                    options {
+                                        id
+                                        name
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        `;
+
+        try {
+            const response = await this.graphqlClient<{
+                node: {
+                    fields: {
+                        nodes: Array<{
+                            __typename?: string;
+                            id?: string;
+                            name?: string;
+                            options?: Array<{ id: string; name: string }>;
+                        }>;
+                    };
+                };
+            }>(query, { projectId });
+
+            // Find the status field
+            const statusField = response.node.fields.nodes.find(
+                (f) =>
+                    f.__typename === 'ProjectV2SingleSelectField' &&
+                    (f.name?.toLowerCase() === 'status' ||
+                        f.name?.toLowerCase() === 'state' ||
+                        f.name?.toLowerCase() === 'stage')
+            );
+
+            if (!statusField || !statusField.options || !statusField.id) {
+                console.error('Status field not found in project');
+                return false;
+            }
+
+            // Find the target option
+            const targetOption = statusField.options.find(
+                (o) => o.name.toLowerCase() === statusName.toLowerCase()
+            );
+
+            if (!targetOption) {
+                console.error(`Status option "${statusName}" not found. Available: ${statusField.options.map(o => o.name).join(', ')}`);
+                return false;
+            }
+
+            // Now update the item
+            return await this.updateItemStatus(projectId, itemId, statusField.id, targetOption.id);
+        } catch (error) {
+            console.error('Failed to update item status by name:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Get all single-select fields for a project with their options
+     */
+    async getProjectFields(projectId: string): Promise<Array<{
+        id: string;
+        name: string;
+        options: Array<{ id: string; name: string }>;
+    }>> {
+        if (!this.graphqlClient) {
+            throw new Error('Not authenticated');
+        }
+
+        const query = `
+            query($projectId: ID!) {
+                node(id: $projectId) {
+                    ... on ProjectV2 {
+                        fields(first: 30) {
+                            nodes {
+                                ... on ProjectV2SingleSelectField {
+                                    __typename
+                                    id
+                                    name
+                                    options {
+                                        id
+                                        name
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        `;
+
+        try {
+            const response = await this.graphqlClient<{
+                node: {
+                    fields: {
+                        nodes: Array<{
+                            __typename?: string;
+                            id?: string;
+                            name?: string;
+                            options?: Array<{ id: string; name: string }>;
+                        }>;
+                    };
+                };
+            }>(query, { projectId });
+
+            return response.node.fields.nodes
+                .filter((f) => f.__typename === 'ProjectV2SingleSelectField' && f.id && f.name)
+                .map((f) => ({
+                    id: f.id!,
+                    name: f.name!,
+                    options: f.options || [],
+                }));
+        } catch (error) {
+            console.error('Failed to get project fields:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Update any single-select field value on a project item
+     */
+    async updateItemField(
+        projectId: string,
+        itemId: string,
+        fieldId: string,
+        optionId: string
+    ): Promise<boolean> {
+        if (!this.graphqlClient) {
+            throw new Error('Not authenticated');
+        }
+
+        const mutation = `
+            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(
+                    input: {
+                        projectId: $projectId
+                        itemId: $itemId
+                        fieldId: $fieldId
+                        value: { singleSelectOptionId: $optionId }
+                    }
+                ) {
+                    projectV2Item {
+                        id
+                    }
+                }
+            }
+        `;
+
+        try {
+            console.log('Updating field:', { projectId, itemId, fieldId, optionId });
+            const result = await this.graphqlClient(mutation, {
+                projectId,
+                itemId,
+                fieldId,
+                optionId,
+            });
+            console.log('Update result:', result);
+            return true;
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            console.error('Failed to update item field:', errorMessage);
+            throw new Error(`Failed to update field: ${errorMessage}`);
+        }
+    }
+
+    /**
+     * Update assignees on an issue or PR
+     */
+    async updateAssignees(
+        owner: string,
+        repo: string,
+        issueNumber: number,
+        assigneeLogins: string[],
+        itemType: 'issue' | 'pr'
+    ): Promise<boolean> {
+        if (!this.graphqlClient) {
+            throw new Error('Not authenticated');
+        }
+
+        try {
+            // Get the issue/PR node ID and current assignees
+            const query = itemType === 'issue' ? `
+                query($owner: String!, $repo: String!, $number: Int!) {
+                    repository(owner: $owner, name: $repo) {
+                        issue(number: $number) {
+                            id
+                            assignees(first: 20) {
+                                nodes {
+                                    id
+                                    login
+                                }
+                            }
+                        }
+                    }
+                }
+            ` : `
+                query($owner: String!, $repo: String!, $number: Int!) {
+                    repository(owner: $owner, name: $repo) {
+                        pullRequest(number: $number) {
+                            id
+                            assignees(first: 20) {
+                                nodes {
+                                    id
+                                    login
+                                }
+                            }
+                        }
+                    }
+                }
+            `;
+
+            const response = await this.graphqlClient<{
+                repository: {
+                    issue?: { id: string; assignees: { nodes: Array<{ id: string; login: string }> } };
+                    pullRequest?: { id: string; assignees: { nodes: Array<{ id: string; login: string }> } };
+                };
+            }>(query, { owner, repo, number: issueNumber });
+
+            const item = response.repository.issue || response.repository.pullRequest;
+            if (!item) {
+                throw new Error('Issue/PR not found');
+            }
+
+            const currentAssignees = item.assignees.nodes;
+            const currentLogins = currentAssignees.map((a) => a.login.toLowerCase());
+
+            // Get user IDs for new assignees
+            const newAssigneeIds: string[] = [];
+            for (const login of assigneeLogins) {
+                // Check if already in current assignees
+                const existing = currentAssignees.find((a) => a.login.toLowerCase() === login.toLowerCase());
+                if (existing) {
+                    newAssigneeIds.push(existing.id);
+                } else {
+                    // Need to look up the user ID
+                    const userQuery = `
+                        query($login: String!) {
+                            user(login: $login) {
+                                id
+                            }
+                        }
+                    `;
+                    const userResponse = await this.graphqlClient<{
+                        user: { id: string } | null;
+                    }>(userQuery, { login });
+
+                    if (userResponse.user) {
+                        newAssigneeIds.push(userResponse.user.id);
+                    }
+                }
+            }
+
+            // Determine who to add and remove
+            const toAdd = newAssigneeIds.filter((id) =>
+                !currentAssignees.some((a) => a.id === id)
+            );
+            const toRemove = currentAssignees
+                .filter((a) => !assigneeLogins.some((l) => l.toLowerCase() === a.login.toLowerCase()))
+                .map((a) => a.id);
+
+            // Add new assignees
+            if (toAdd.length > 0) {
+                await this.graphqlClient(`
+                    mutation($assignableId: ID!, $assigneeIds: [ID!]!) {
+                        addAssigneesToAssignable(input: {
+                            assignableId: $assignableId
+                            assigneeIds: $assigneeIds
+                        }) {
+                            assignable {
+                                ... on Issue { id }
+                                ... on PullRequest { id }
+                            }
+                        }
+                    }
+                `, { assignableId: item.id, assigneeIds: toAdd });
+            }
+
+            // Remove old assignees
+            if (toRemove.length > 0) {
+                await this.graphqlClient(`
+                    mutation($assignableId: ID!, $assigneeIds: [ID!]!) {
+                        removeAssigneesFromAssignable(input: {
+                            assignableId: $assignableId
+                            assigneeIds: $assigneeIds
+                        }) {
+                            assignable {
+                                ... on Issue { id }
+                                ... on PullRequest { id }
+                            }
+                        }
+                    }
+                `, { assignableId: item.id, assigneeIds: toRemove });
+            }
+
+            return true;
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            console.error('Failed to update assignees:', errorMessage);
+            throw new Error(`Failed to update assignees: ${errorMessage}`);
+        }
+    }
+
+    /**
+     * Get repository collaborators for assignee suggestions
+     */
+    async getCollaborators(owner: string, repo: string): Promise<Array<{ login: string; avatarUrl: string }>> {
+        if (!this.graphqlClient) {
+            throw new Error('Not authenticated');
+        }
+
+        const query = `
+            query($owner: String!, $repo: String!) {
+                repository(owner: $owner, name: $repo) {
+                    collaborators(first: 50) {
+                        nodes {
+                            login
+                            avatarUrl
+                        }
+                    }
+                }
+            }
+        `;
+
+        try {
+            const response = await this.graphqlClient<{
+                repository: {
+                    collaborators?: {
+                        nodes: Array<{ login: string; avatarUrl: string }>;
+                    };
+                };
+            }>(query, { owner, repo });
+
+            return response.repository.collaborators?.nodes || [];
+        } catch (error) {
+            // Collaborators query may fail if user doesn't have admin access
+            console.error('Failed to get collaborators:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Get available status options for a project
+     */
+    async getProjectStatusOptions(projectId: string): Promise<string[]> {
+        if (!this.graphqlClient) {
+            throw new Error('Not authenticated');
+        }
+
+        const query = `
+            query($projectId: ID!) {
+                node(id: $projectId) {
+                    ... on ProjectV2 {
+                        fields(first: 30) {
+                            nodes {
+                                ... on ProjectV2SingleSelectField {
+                                    __typename
+                                    name
+                                    options {
+                                        name
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        `;
+
+        try {
+            const response = await this.graphqlClient<{
+                node: {
+                    fields: {
+                        nodes: Array<{
+                            __typename?: string;
+                            name?: string;
+                            options?: Array<{ name: string }>;
+                        }>;
+                    };
+                };
+            }>(query, { projectId });
+
+            const statusField = response.node.fields.nodes.find(
+                (f) =>
+                    f.__typename === 'ProjectV2SingleSelectField' &&
+                    (f.name?.toLowerCase() === 'status' ||
+                        f.name?.toLowerCase() === 'state' ||
+                        f.name?.toLowerCase() === 'stage')
+            );
+
+            return statusField?.options?.map((o) => o.name) || [];
+        } catch (error) {
+            console.error('Failed to get status options:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Find a PR associated with an issue
+     * Checks for PRs that reference the issue number in the same repository
+     */
+    async findPRForIssue(
+        item: NormalizedProjectItem
+    ): Promise<{ state: 'open' | 'closed'; merged: boolean; url: string } | null> {
+        if (!this.graphqlClient || !item.repository || !item.number) {
+            return null;
+        }
+
+        const [owner, repo] = item.repository.split('/');
+        if (!owner || !repo) {
+            return null;
+        }
+
+        // Search for PRs that reference this issue
+        // GitHub's search syntax: type:pr repo:owner/repo in:body #123
+        const searchQuery = `type:pr repo:${owner}/${repo} in:body #${item.number}`;
+
+        try {
+            const query = `
+                query($searchQuery: String!) {
+                    search(query: $searchQuery, type: ISSUE, first: 5) {
+                        nodes {
+                            ... on PullRequest {
+                                __typename
+                                state
+                                merged
+                                url
+                                body
+                            }
+                        }
+                    }
+                }
+            `;
+
+            const response = await this.graphqlClient<{
+                search: {
+                    nodes: Array<{
+                        __typename?: string;
+                        state?: string;
+                        merged?: boolean;
+                        url?: string;
+                        body?: string;
+                    }>;
+                };
+            }>(query, { searchQuery });
+
+            // Filter to PRs that actually reference this issue
+            const prs = response.search.nodes.filter(
+                (n) =>
+                    n.__typename === 'PullRequest' &&
+                    n.body?.includes(`#${item.number}`)
+            );
+
+            if (prs.length === 0) {
+                return null;
+            }
+
+            // Return the most relevant PR (prefer merged, then open, then closed)
+            const merged = prs.find((pr) => pr.merged);
+            const open = prs.find((pr) => pr.state === 'OPEN');
+            const pr = merged || open || prs[0];
+
+            return {
+                state: pr.state === 'OPEN' ? 'open' : 'closed',
+                merged: pr.merged || false,
+                url: pr.url || '',
+            };
+        } catch (error) {
+            console.error('Failed to find PR for issue:', error);
+            return null;
+        }
+    }
+
+    /**
+     * Get repository node ID (needed for creating issues)
+     */
+    async getRepositoryId(owner: string, repo: string): Promise<string | null> {
+        if (!this.graphqlClient) {
+            return null;
+        }
+
+        try {
+            const response = await this.graphqlClient<{
+                repository: { id: string };
+            }>(`
+                query($owner: String!, $repo: String!) {
+                    repository(owner: $owner, name: $repo) {
+                        id
+                    }
+                }
+            `, { owner, repo });
+
+            return response.repository.id;
+        } catch (error) {
+            console.error('Failed to get repository ID:', error);
+            return null;
+        }
+    }
+
+    /**
+     * Get available issue types for an organization
+     * Note: Issue types require special GraphQL header - not yet supported
+     */
+    async getIssueTypes(_owner: string): Promise<Array<{ id: string; name: string }>> {
+        // Issue types API requires 'GraphQL-Features: issue_types' header
+        // which our graphql client doesn't easily support yet
+        // For now, return empty - issue types are fetched from individual items
+        return [];
+    }
+
+    /**
+     * Create a new issue in a repository
+     */
+    async createIssue(
+        owner: string,
+        repo: string,
+        title: string,
+        body: string,
+        options?: {
+            labels?: string[];
+            assignees?: string[];
+            issueTypeId?: string;
+        }
+    ): Promise<{ id: string; number: number; url: string } | null> {
+        if (!this.graphqlClient) {
+            throw new Error('Not authenticated');
+        }
+
+        // Get repository ID
+        const repositoryId = await this.getRepositoryId(owner, repo);
+        if (!repositoryId) {
+            throw new Error('Could not find repository');
+        }
+
+        // Build mutation input
+        const input: Record<string, unknown> = {
+            repositoryId,
+            title,
+            body,
+        };
+
+        // Note: GraphQL createIssue doesn't support labels/assignees directly
+        // We need to use REST API or additional mutations for those
+
+        try {
+            const response = await this.graphqlClient<{
+                createIssue: {
+                    issue: {
+                        id: string;
+                        number: number;
+                        url: string;
+                    };
+                };
+            }>(`
+                mutation($input: CreateIssueInput!) {
+                    createIssue(input: $input) {
+                        issue {
+                            id
+                            number
+                            url
+                        }
+                    }
+                }
+            `, { input });
+
+            const issue = response.createIssue.issue;
+
+            // If labels or assignees were specified, update them via REST-style mutations
+            if (options?.labels && options.labels.length > 0) {
+                await this.addLabelsToIssue(owner, repo, issue.number, options.labels);
+            }
+
+            if (options?.assignees && options.assignees.length > 0) {
+                await this.updateAssignees(owner, repo, issue.number, options.assignees, 'issue');
+            }
+
+            return issue;
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            console.error('Failed to create issue:', errorMessage);
+            throw new Error(`Failed to create issue: ${errorMessage}`);
+        }
+    }
+
+    /**
+     * Add labels to an issue
+     */
+    private async addLabelsToIssue(
+        owner: string,
+        repo: string,
+        issueNumber: number,
+        labelNames: string[]
+    ): Promise<void> {
+        if (!this.graphqlClient) return;
+
+        try {
+            // Get issue ID and label IDs
+            const response = await this.graphqlClient<{
+                repository: {
+                    issue: { id: string };
+                    labels: { nodes: Array<{ id: string; name: string }> };
+                };
+            }>(`
+                query($owner: String!, $repo: String!, $number: Int!, $labelNames: [String!]!) {
+                    repository(owner: $owner, name: $repo) {
+                        issue(number: $number) {
+                            id
+                        }
+                        labels(first: 50, query: "") {
+                            nodes {
+                                id
+                                name
+                            }
+                        }
+                    }
+                }
+            `, { owner, repo, number: issueNumber, labelNames });
+
+            const issueId = response.repository.issue.id;
+            const labelIds = response.repository.labels.nodes
+                .filter(l => labelNames.includes(l.name))
+                .map(l => l.id);
+
+            if (labelIds.length > 0) {
+                await this.graphqlClient(`
+                    mutation($issueId: ID!, $labelIds: [ID!]!) {
+                        addLabelsToLabelable(input: { labelableId: $issueId, labelIds: $labelIds }) {
+                            clientMutationId
+                        }
+                    }
+                `, { issueId, labelIds });
+            }
+        } catch (error) {
+            console.error('Failed to add labels:', error);
+        }
+    }
+
+    /**
+     * Add an issue to a project
+     */
+    async addIssueToProject(
+        projectId: string,
+        issueId: string
+    ): Promise<string | null> {
+        if (!this.graphqlClient) {
+            throw new Error('Not authenticated');
+        }
+
+        try {
+            const response = await this.graphqlClient<{
+                addProjectV2ItemById: {
+                    item: { id: string };
+                };
+            }>(`
+                mutation($projectId: ID!, $contentId: ID!) {
+                    addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
+                        item {
+                            id
+                        }
+                    }
+                }
+            `, { projectId, contentId: issueId });
+
+            return response.addProjectV2ItemById.item.id;
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            console.error('Failed to add issue to project:', errorMessage);
+            throw new Error(`Failed to add issue to project: ${errorMessage}`);
+        }
     }
 }

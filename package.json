@@ -73,39 +73,137 @@
         "category": "GitHub Projects"
       },
       {
+        "command": "ghProjects.prOpened",
+        "title": "PR Opened: Update Issue Status",
+        "icon": "$(git-pull-request)",
+        "category": "GitHub Projects"
+      },
+      {
         "command": "ghProjects.debugAuth",
         "title": "Debug Authentication",
+        "category": "GitHub Projects"
+      },
+      {
+        "command": "ghProjects.showItemDetail",
+        "title": "Show Details",
+        "icon": "$(info)",
+        "category": "GitHub Projects"
+      },
+      {
+        "command": "ghProjects.changeItemStatus",
+        "title": "Move to...",
+        "icon": "$(arrow-right)",
+        "category": "GitHub Projects"
+      },
+      {
+        "command": "ghProjects.hideView",
+        "title": "Hide View",
+        "icon": "$(eye-closed)",
+        "category": "GitHub Projects"
+      },
+      {
+        "command": "ghProjects.showHiddenViews",
+        "title": "Show Hidden Views",
+        "category": "GitHub Projects"
+      },
+      {
+        "command": "ghProjects.openPlanningMode",
+        "title": "Open Planning Board",
+        "icon": "$(layout)",
+        "category": "GitHub Projects"
+      },
+      {
+        "command": "ghProjects.newIssue",
+        "title": "New Issue",
+        "icon": "$(add)",
+        "category": "GitHub Projects"
+      },
+      {
+        "command": "ghProjects.configurePlanningViews",
+        "title": "Configure Planning Views",
+        "category": "GitHub Projects"
+      },
+      {
+        "command": "ghProjects.linkBranch",
+        "title": "Link Branch",
+        "icon": "$(git-branch)",
+        "category": "GitHub Projects"
+      },
+      {
+        "command": "ghProjects.switchToBranch",
+        "title": "Switch to Branch",
+        "icon": "$(arrow-swap)",
+        "category": "GitHub Projects"
+      },
+      {
+        "command": "ghProjects.unlinkBranch",
+        "title": "Unlink Branch",
         "category": "GitHub Projects"
       }
     ],
     "menus": {
       "view/title": [
         {
+          "command": "ghProjects.newIssue",
+          "when": "view == ghProjects.board",
+          "group": "navigation@1"
+        },
+        {
+          "command": "ghProjects.openPlanningMode",
+          "when": "view == ghProjects.board",
+          "group": "navigation@2"
+        },
+        {
           "command": "ghProjects.refresh",
           "when": "view == ghProjects.board",
-          "group": "navigation"
+          "group": "navigation@3"
         },
         {
           "command": "ghProjects.configureProject",
           "when": "view == ghProjects.board",
-          "group": "navigation"
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [
         {
-          "command": "ghProjects.startWorking",
+          "command": "ghProjects.switchToBranch",
           "when": "viewItem == projectItem",
           "group": "inline@1"
         },
         {
-          "command": "ghProjects.openItem",
+          "command": "ghProjects.startWorking",
           "when": "viewItem == projectItem",
           "group": "inline@2"
+        },
+        {
+          "command": "ghProjects.changeItemStatus",
+          "when": "viewItem == projectItem",
+          "group": "inline@3"
+        },
+        {
+          "command": "ghProjects.openItem",
+          "when": "viewItem == projectItem",
+          "group": "inline@4"
+        },
+        {
+          "command": "ghProjects.linkBranch",
+          "when": "viewItem == projectItem",
+          "group": "branch@1"
+        },
+        {
+          "command": "ghProjects.unlinkBranch",
+          "when": "viewItem == projectItem",
+          "group": "branch@2"
         },
         {
           "command": "ghProjects.openProjectInBrowser",
           "when": "viewItem == project",
           "group": "inline"
+        },
+        {
+          "command": "ghProjects.hideView",
+          "when": "viewItem == view",
+          "group": "navigation"
         }
       ]
     },
@@ -114,8 +212,16 @@
       "properties": {
         "ghProjects.showOnlyAssignedToMe": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "Only show items assigned to the authenticated user"
+        },
+        "ghProjects.hiddenViews": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "List of view names to hide from the sidebar (e.g., [\"Roadmap\", \"Archive\"])"
         },
         "ghProjects.showEmptyColumns": {
           "type": "boolean",
@@ -137,10 +243,42 @@
           "default": "In Progress",
           "description": "Status to move the item to when you click 'Start Working'. Leave empty to not change status."
         },
+        "ghProjects.prOpenedStatus": {
+          "type": "string",
+          "default": "In Review",
+          "description": "Status to move the issue to when a PR is opened from its branch. Leave empty to not change status."
+        },
+        "ghProjects.prMergedStatus": {
+          "type": "string",
+          "default": "Done",
+          "description": "Status to move the issue to when its PR is merged. Leave empty to not change status."
+        },
         "ghProjects.maxBranchNameLength": {
           "type": "number",
           "default": 60,
           "description": "Maximum length for generated branch names (title will be truncated if needed)"
+        },
+        "ghProjects.planningModeViews": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "List of view names to show in Planning Mode as tabs (e.g., [\"Sprint Board\", \"Backlog\"]). Empty = show all board views."
+        },
+        "ghProjects.myStuffHiddenStatuses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": ["Done", "Closed"],
+          "description": "Statuses to hide in 'My Stuff' sidebar view"
+        },
+        "ghProjects.allowBlankIssues": {
+          "type": "string",
+          "enum": ["auto", "always", "never"],
+          "default": "auto",
+          "description": "Allow creating blank issues without a template. 'auto' respects the repo's .github/ISSUE_TEMPLATE/config.yml setting."
         }
       }
     }
