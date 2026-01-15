@@ -328,10 +328,6 @@ export class GitHubAPI {
                                             color
                                         }
                                     }
-                                    ... on ProjectV2Field {
-                                        id
-                                        name
-                                    }
                                     ... on ProjectV2IterationField {
                                         id
                                         name
@@ -393,10 +389,6 @@ export class GitHubAPI {
                                                 color
                                             }
                                         }
-                                        ... on ProjectV2Field {
-                                            id
-                                            name
-                                        }
                                         ... on ProjectV2IterationField {
                                             id
                                             name
@@ -442,6 +434,7 @@ export class GitHubAPI {
         const projects: ProjectWithViews[] = [];
 
         // GraphQL fragment for project with views
+        // Note: ProjectV2FieldConfiguration is a union type, so fragments are peers, not nested
         const projectFragment = `
             id
             title
@@ -471,10 +464,6 @@ export class GitHubAPI {
                             color
                         }
                     }
-                    ... on ProjectV2Field {
-                        id
-                        name
-                    }
                     ... on ProjectV2IterationField {
                         id
                         name
@@ -503,20 +492,12 @@ export class GitHubAPI {
                                 id
                                 name
                             }
-                            ... on ProjectV2Field {
-                                id
-                                name
-                            }
                         }
                     }
                     verticalGroupByFields: verticalGroupBy(first: 5) {
                         nodes {
                             __typename
                             ... on ProjectV2SingleSelectField {
-                                id
-                                name
-                            }
-                            ... on ProjectV2Field {
                                 id
                                 name
                             }
@@ -563,6 +544,16 @@ export class GitHubAPI {
             }
         } catch (error) {
             console.error('Failed to fetch repo projects with views:', error);
+            // Check for SSO-related errors
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            if (errorMessage.includes('SSO') || errorMessage.includes('SAML')) {
+                throw new Error(
+                    `SSO Authorization Required: Your OAuth token needs to be authorized for the ${repo.owner} organization. ` +
+                    `Visit github.com/settings/connections/applications to authorize.`
+                );
+            }
+            // Surface the actual error for debugging
+            throw new Error(`Failed to access projects for ${repo.owner}/${repo.name}: ${errorMessage}`);
         }
 
         // Also try organization-level projects
@@ -599,8 +590,18 @@ export class GitHubAPI {
                     });
                 }
             }
-        } catch {
-            // Owner is not an org - that's fine
+        } catch (error) {
+            // Check for SSO-related errors on org query
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            if (errorMessage.includes('SSO') || errorMessage.includes('SAML')) {
+                console.error('SSO authorization needed for organization:', repo.owner);
+                throw new Error(
+                    `SSO Authorization Required: Your OAuth token needs to be authorized for the ${repo.owner} organization. ` +
+                    `Visit github.com/settings/connections/applications to authorize.`
+                );
+            }
+            // Log but don't throw - owner might just not be an org
+            console.log(`Org query for ${repo.owner} failed (may not be an org):`, errorMessage);
         }
 
         return projects;

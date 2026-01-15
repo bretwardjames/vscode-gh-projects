@@ -71,6 +71,11 @@
         "title": "Start Working",
         "icon": "$(play)",
         "category": "GitHub Projects"
+      },
+      {
+        "command": "ghProjects.debugAuth",
+        "title": "Debug Authentication",
+        "category": "GitHub Projects"
       }
     ],
     "menus": {

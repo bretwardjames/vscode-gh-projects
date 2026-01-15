@@ -80,6 +80,109 @@ function registerCommands(context: vscode.ExtensionContext) {
             }
         }),
 
+        vscode.commands.registerCommand('ghProjects.debugAuth', async () => {
+            // Debug command to help diagnose authentication issues
+            const output = vscode.window.createOutputChannel('GitHub Projects Debug');
+            output.show();
+            output.appendLine('=== GitHub Projects Authentication Debug ===\n');
+
+            try {
+                const session = await vscode.authentication.getSession('github', ['read:project', 'repo'], {
+                    createIfNone: false,
+                });
+
+                if (!session) {
+                    output.appendLine('❌ No GitHub session found. Please sign in first.');
+                    return;
+                }
+
+                output.appendLine(`✅ Authenticated as: ${session.account.label}`);
+                output.appendLine(`   Scopes requested: read:project, repo`);
+                output.appendLine(`   Session ID: ${session.id.substring(0, 8)}...`);
+                output.appendLine('');
+
+                // Test basic API access
+                const { graphql } = await import('@octokit/graphql');
+                const client = graphql.defaults({
+                    headers: { authorization: `token ${session.accessToken}` },
+                });
+
+                // Test viewer query
+                const viewerResult = await client<{ viewer: { login: string; organizations: { nodes: Array<{ login: string }> } } }>(`
+                    query {
+                        viewer {
+                            login
+                            organizations(first: 10) {
+                                nodes {
+                                    login
+                                }
+                            }
+                        }
+                    }
+                `);
+                output.appendLine(`✅ API connection works`);
+                output.appendLine(`   User: ${viewerResult.viewer.login}`);
+                output.appendLine(`   Visible orgs: ${viewerResult.viewer.organizations.nodes.map(o => o.login).join(', ') || 'none'}`);
+                output.appendLine('');
+
+                // Test current repo
+                const repo = await detectRepository();
+                if (repo) {
+                    output.appendLine(`📁 Current repository: ${repo.fullName}`);
+                    output.appendLine('');
+
+                    // Try to access repo projects
+                    try {
+                        const repoResult = await client<{ repository: { projectsV2: { totalCount: number } } }>(`
+                            query($owner: String!, $name: String!) {
+                                repository(owner: $owner, name: $name) {
+                                    projectsV2(first: 1) {
+                                        totalCount
+                                    }
+                                }
+                            }
+                        `, { owner: repo.owner, name: repo.name });
+                        output.appendLine(`✅ Repo projects access: ${repoResult.repository.projectsV2.totalCount} projects found`);
+                    } catch (e) {
+                        output.appendLine(`❌ Repo projects access failed: ${e instanceof Error ? e.message : String(e)}`);
+                        output.appendLine('');
+                        output.appendLine('💡 If this is an org repo with SSO, you may need to authorize the token:');
+                        output.appendLine('   1. Go to github.com/settings/connections/applications');
+                        output.appendLine('   2. Find "Visual Studio Code" or "Cursor"');
+                        output.appendLine('   3. Click "Configure" and authorize for your organization');
+                    }
+
+                    // Try org projects if owner looks like an org
+                    try {
+                        const orgResult = await client<{ organization: { projectsV2: { totalCount: number } } }>(`
+                            query($owner: String!) {
+                                organization(login: $owner) {
+                                    projectsV2(first: 1) {
+                                        totalCount
+                                    }
+                                }
+                            }
+                        `, { owner: repo.owner });
+                        output.appendLine(`✅ Org projects access (${repo.owner}): ${orgResult.organization.projectsV2.totalCount} projects found`);
+                    } catch (e) {
+                        const errorMsg = e instanceof Error ? e.message : String(e);
+                        if (errorMsg.includes('Could not resolve to an Organization')) {
+                            output.appendLine(`ℹ️  ${repo.owner} is not an organization (user account)`);
+                        } else {
+                            output.appendLine(`❌ Org projects access failed: ${errorMsg}`);
+                        }
+                    }
+                } else {
+                    output.appendLine('ℹ️  No git repository detected in current workspace');
+                }
+
+            } catch (e) {
+                output.appendLine(`❌ Error: ${e instanceof Error ? e.message : String(e)}`);
+            }
+
+            output.appendLine('\n=== End Debug ===');
+        }),
+
         vscode.commands.registerCommand('ghProjects.startWorking', async (node: unknown) => {
             // The node comes from the tree view context menu
             if (node instanceof ItemNode) {
@@ -154,8 +257,30 @@ async function loadProjects() {
         }
     } catch (error) {
         console.error('Failed to load projects:', error);
-        statusBar.setError('Failed to load projects');
         boardProvider.setLoading(false);
+
+        const errorMessage = error instanceof Error ? error.message : String(error);
+
+        // Check for SSO-related errors and offer to help
+        if (errorMessage.includes('SSO Authorization Required')) {
+            statusBar.setError('SSO authorization required');
+            const action = await vscode.window.showErrorMessage(
+                errorMessage,
+                'Open GitHub Settings',
+                'Re-authenticate'
+            );
+            if (action === 'Open GitHub Settings') {
+                await vscode.env.openExternal(
+                    vscode.Uri.parse('https://github.com/settings/connections/applications')
+                );
+            } else if (action === 'Re-authenticate') {
+                // Clear the session and try again
+                await vscode.commands.executeCommand('ghProjects.signIn');
+            }
+        } else {
+            statusBar.setError('Failed to load projects');
+            vscode.window.showErrorMessage(`GitHub Projects: ${errorMessage}`);
+        }
     }
 }
 
