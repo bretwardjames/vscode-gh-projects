@@ -1,0 +1,163 @@
+{
+  "name": "gh-projects",
+  "displayName": "GitHub Projects",
+  "description": "View GitHub Project boards directly in VS Code - mirrors your project views exactly as configured on GitHub",
+  "version": "0.0.1",
+  "publisher": "bretwardjames",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "github-projects",
+          "title": "GitHub Projects",
+          "icon": "resources/project.svg"
+        }
+      ]
+    },
+    "views": {
+      "github-projects": [
+        {
+          "id": "ghProjects.board",
+          "name": "Project Board",
+          "contextualTitle": "GitHub Projects"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "ghProjects.refresh",
+        "title": "Refresh",
+        "icon": "$(refresh)",
+        "category": "GitHub Projects"
+      },
+      {
+        "command": "ghProjects.signIn",
+        "title": "Sign In to GitHub",
+        "category": "GitHub Projects"
+      },
+      {
+        "command": "ghProjects.openItem",
+        "title": "Open in Browser",
+        "icon": "$(link-external)",
+        "category": "GitHub Projects"
+      },
+      {
+        "command": "ghProjects.configureProject",
+        "title": "Settings",
+        "icon": "$(gear)",
+        "category": "GitHub Projects"
+      },
+      {
+        "command": "ghProjects.showAccessHelp",
+        "title": "Troubleshoot Access",
+        "category": "GitHub Projects"
+      },
+      {
+        "command": "ghProjects.openProjectInBrowser",
+        "title": "Open Project in Browser",
+        "icon": "$(link-external)",
+        "category": "GitHub Projects"
+      },
+      {
+        "command": "ghProjects.startWorking",
+        "title": "Start Working",
+        "icon": "$(play)",
+        "category": "GitHub Projects"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "ghProjects.refresh",
+          "when": "view == ghProjects.board",
+          "group": "navigation"
+        },
+        {
+          "command": "ghProjects.configureProject",
+          "when": "view == ghProjects.board",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "ghProjects.startWorking",
+          "when": "viewItem == projectItem",
+          "group": "inline@1"
+        },
+        {
+          "command": "ghProjects.openItem",
+          "when": "viewItem == projectItem",
+          "group": "inline@2"
+        },
+        {
+          "command": "ghProjects.openProjectInBrowser",
+          "when": "viewItem == project",
+          "group": "inline"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "GitHub Projects",
+      "properties": {
+        "ghProjects.showOnlyAssignedToMe": {
+          "type": "boolean",
+          "default": true,
+          "description": "Only show items assigned to the authenticated user"
+        },
+        "ghProjects.showEmptyColumns": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show columns even when they have no items"
+        },
+        "ghProjects.mainBranch": {
+          "type": "string",
+          "default": "main",
+          "description": "The name of your main/master branch to create feature branches from"
+        },
+        "ghProjects.branchNamePattern": {
+          "type": "string",
+          "default": "{user}/{number}-{title}",
+          "description": "Pattern for branch names. Available variables: {user}, {number}, {title}, {repo}"
+        },
+        "ghProjects.startWorkingStatus": {
+          "type": "string",
+          "default": "In Progress",
+          "description": "Status to move the item to when you click 'Start Working'. Leave empty to not change status."
+        },
+        "ghProjects.maxBranchNameLength": {
+          "type": "number",
+          "default": 60,
+          "description": "Maximum length for generated branch names (title will be truncated if needed)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "eslint": "^8.54.0",
+    "typescript": "^5.3.2"
+  },
+  "dependencies": {
+    "@octokit/graphql": "^7.0.2"
+  },
+  "extensionDependencies": [
+    "vscode.github-authentication"
+  ]
+}
