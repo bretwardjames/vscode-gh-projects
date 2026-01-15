@@ -338,7 +338,10 @@ export class ProjectBoardProvider implements vscode.TreeDataProvider<TreeElement
 
         for (const status of statusOrder) {
             const items = itemsByStatus.get(status) || [];
-            if (items.length > 0 || showEmptyStatuses) {
+            const isHidden = hiddenStatuses.some(h => h.toLowerCase() === status.toLowerCase());
+
+            // Show if has items, OR if showEmpty is enabled AND not hidden
+            if (items.length > 0 || (showEmptyStatuses && !isHidden)) {
                 groups.push(new StatusGroupNode(status, items, project));
             }
             itemsByStatus.delete(status);
