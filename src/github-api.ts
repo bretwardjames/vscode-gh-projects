@@ -484,6 +484,30 @@ export class GitHubAPI {
                     filter
                 }
             }
+            fields(first: 30) {
+                nodes {
+                    ... on ProjectV2Field {
+                        __typename
+                        id
+                        name
+                    }
+                    ... on ProjectV2SingleSelectField {
+                        __typename
+                        id
+                        name
+                        options {
+                            id
+                            name
+                            color
+                        }
+                    }
+                    ... on ProjectV2IterationField {
+                        __typename
+                        id
+                        name
+                    }
+                }
+            }
         `;
 
         // Query repository-linked projects
