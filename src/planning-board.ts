@@ -448,10 +448,6 @@ export class PlanningBoardPanel {
         const config = vscode.workspace.getConfiguration('ghProjects');
         const defaultTemplate = config.get<string>('defaultIssueTemplate', '');
 
-        // Debug logging
-        console.log('[GH Projects] Default template setting:', JSON.stringify(defaultTemplate));
-        console.log('[GH Projects] Available templates:', templates.map(t => t.filename));
-
         this._panel.webview.html = this._getNewIssueFormHtml(templates, blankIssuesEnabled, defaultTemplate);
     }
 
@@ -644,9 +640,7 @@ export class PlanningBoardPanel {
         // Build template options - templates first, then blank at the end if allowed
         const templateOptions = templates
             .map(t => {
-                const isMatch = isDefaultTemplate(t.filename);
-                console.log(`[GH Projects] Template "${t.filename}" match default "${defaultTemplate}": ${isMatch}`);
-                const selected = isMatch ? ' selected' : '';
+                const selected = isDefaultTemplate(t.filename) ? ' selected' : '';
                 return `<option value="${this._escapeHtml(t.filename)}"${selected}>${this._escapeHtml(t.name)}</option>`;
             })
             .join('');

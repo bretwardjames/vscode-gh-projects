@@ -2,13 +2,34 @@
   "name": "gh-projects",
   "displayName": "GitHub Projects",
   "description": "View GitHub Project boards directly in VS Code - mirrors your project views exactly as configured on GitHub",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "publisher": "bretwardjames",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bretwardjames/vscode-gh-projects"
+  },
+  "bugs": {
+    "url": "https://github.com/bretwardjames/vscode-gh-projects/issues"
+  },
+  "homepage": "https://github.com/bretwardjames/vscode-gh-projects#readme",
+  "icon": "resources/icon.png",
+  "galleryBanner": {
+    "color": "#24292e",
+    "theme": "dark"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
     "Other"
+  ],
+  "keywords": [
+    "github",
+    "projects",
+    "project board",
+    "issues",
+    "kanban"
   ],
   "activationEvents": [],
   "main": "./out/extension.js",
