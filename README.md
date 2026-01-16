@@ -32,9 +32,12 @@ Click "Start Working" on any issue to:
 Open a full planning board view with:
 
 - Visual kanban-style board
-- Drag and drop between columns (coming soon)
 - Create new issues with template support
 - Quick access to issue details
+
+### Drag and Drop
+
+Drag issues between status groups in the sidebar to quickly change their status. Multi-select supported for bulk moves.
 
 ### Branch Linking
 
@@ -127,8 +130,8 @@ No data is sent to any third-party servers. All communication is directly betwee
 
 ## Known Issues
 
-- Drag and drop in the planning board is not yet implemented
 - Organization-level projects require you to have access to the organization
+- SSO-protected organizations require token authorization at github.com/settings/connections/applications
 
 ## Contributing
 
