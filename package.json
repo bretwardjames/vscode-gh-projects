@@ -2,7 +2,7 @@
   "name": "gh-projects",
   "displayName": "GitHub Projects",
   "description": "View GitHub Project boards directly in VS Code - mirrors your project views exactly as configured on GitHub",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "bretwardjames",
   "license": "MIT",
   "repository": {
@@ -292,12 +292,19 @@
           "items": {
             "type": "string"
           },
-          "default": ["Done", "Closed"],
+          "default": [
+            "Done",
+            "Closed"
+          ],
           "description": "Statuses to hide in 'My Stuff' sidebar view"
         },
         "ghProjects.allowBlankIssues": {
           "type": "string",
-          "enum": ["auto", "always", "never"],
+          "enum": [
+            "auto",
+            "always",
+            "never"
+          ],
           "default": "auto",
           "description": "Allow creating blank issues without a template. 'auto' respects the repo's .github/ISSUE_TEMPLATE/config.yml setting."
         },
@@ -305,7 +312,11 @@
           "type": "string",
           "default": "",
           "description": "Default issue template name to use when creating new issues (e.g., 'bug_report', 'feature_request'). Leave empty to show template picker.",
-          "examples": ["bug_report", "feature_request", "custom_template"]
+          "examples": [
+            "bug_report",
+            "feature_request",
+            "custom_template"
+          ]
         }
       }
     }
