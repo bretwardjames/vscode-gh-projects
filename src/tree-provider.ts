@@ -221,7 +221,7 @@ export class ProjectBoardProvider implements vscode.TreeDataProvider<TreeElement
         return items;
     }
 
-    getTreeItem(element: TreeElement): vscode.TreeItem {
+    async getTreeItem(element: TreeElement): Promise<vscode.TreeItem> {
         switch (element.type) {
             case 'project':
                 return this.createProjectTreeItem(element);
@@ -232,7 +232,7 @@ export class ProjectBoardProvider implements vscode.TreeDataProvider<TreeElement
             case 'column':
                 return this.createColumnTreeItem(element);
             case 'item':
-                return this.createItemTreeItem(element);
+                return await this.createItemTreeItem(element);
             case 'message':
                 return this.createMessageTreeItem(element);
         }
@@ -554,12 +554,12 @@ export class ProjectBoardProvider implements vscode.TreeDataProvider<TreeElement
         );
     }
 
-    private createItemTreeItem(node: ItemNode): vscode.TreeItem {
+    private async createItemTreeItem(node: ItemNode): Promise<vscode.TreeItem> {
         const { item } = node;
         const treeItem = new vscode.TreeItem(item.title, vscode.TreeItemCollapsibleState.None);
 
         // Check for linked branch
-        const linkedBranch = this.branchLinker?.getBranchForIssue(item.id) || null;
+        const linkedBranch = (await this.branchLinker?.getBranchForIssue(item.id)) || null;
 
         // Description: repo#number + branch indicator
         let description = '';
@@ -585,7 +585,7 @@ export class ProjectBoardProvider implements vscode.TreeDataProvider<TreeElement
         md.appendMarkdown(`**${item.title}**\n\n`);
         if (item.status) md.appendMarkdown(`Status: ${item.status}\n\n`);
         if (item.assignees.length > 0) {
-            md.appendMarkdown(`Assignees: ${item.assignees.join(', ')}\n\n`);
+            md.appendMarkdown(`Assignees: ${item.assignees.map(a => a.login).join(', ')}\n\n`);
         }
         if (linkedBranch) {
             md.appendMarkdown(`🌿 Branch: \`${linkedBranch}\`\n\n`);

@@ -409,7 +409,7 @@ function registerCommands(context: vscode.ExtensionContext) {
             }
 
             // Get current linked branch if any
-            const currentLinked = branchLinker.getBranchForIssue(item.id);
+            const currentLinked = await branchLinker.getBranchForIssue(item.id);
 
             // Check current branch status
             const { pushed, branchName: currentBranch } = await branchLinker.isCurrentBranchPushed();
@@ -494,7 +494,7 @@ function registerCommands(context: vscode.ExtensionContext) {
             }
 
             const item = node.item;
-            const linkedBranch = branchLinker.getBranchForIssue(item.id);
+            const linkedBranch = await branchLinker.getBranchForIssue(item.id);
 
             if (!linkedBranch) {
                 // No branch linked - offer to link one or start working
@@ -551,7 +551,7 @@ function registerCommands(context: vscode.ExtensionContext) {
             }
 
             const item = node.item;
-            const linkedBranch = branchLinker.getBranchForIssue(item.id);
+            const linkedBranch = await branchLinker.getBranchForIssue(item.id);
 
             if (!linkedBranch) {
                 vscode.window.showInformationMessage('No branch is linked to this issue');

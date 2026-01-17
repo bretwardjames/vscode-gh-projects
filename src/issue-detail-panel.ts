@@ -294,6 +294,9 @@ export class IssueDetailPanel {
             case 'editAssignees':
                 await this._editAssignees();
                 break;
+            case 'saveDescription':
+                await this._editDescription(message.newBody as string);
+                break;
             case 'openInBrowser':
                 if (this._item.url) {
                     vscode.env.openExternal(vscode.Uri.parse(this._item.url));
@@ -354,6 +357,28 @@ export class IssueDetailPanel {
             }
         } catch (error) {
             vscode.window.showErrorMessage(`Failed to update assignees: ${error}`);
+        }
+    }
+
+    private async _editDescription(newBody: string): Promise<void> {
+        const [owner, repo] = (this._item.repository || '').split('/');
+        if (!owner || !repo || !this._item.number) {
+            vscode.window.showErrorMessage('Cannot edit description for this item');
+            return;
+        }
+
+        // Only issues can have their body edited (not PRs)
+        if (this._item.type !== 'issue') {
+            vscode.window.showWarningMessage('Only issue descriptions can be edited from here');
+            return;
+        }
+
+        try {
+            await this._api.updateIssueBody(owner, repo, this._item.number, newBody);
+            vscode.window.showInformationMessage('Description updated');
+            await this._loadAndRender();
+        } catch (error) {
+            vscode.window.showErrorMessage(`Failed to update description: ${error}`);
         }
     }
 
@@ -669,6 +694,35 @@ export class IssueDetailPanel {
                         background: var(--vscode-editor-background);
                         border-radius: 4px;
                     }
+                    .body-header {
+                        display: flex;
+                        align-items: center;
+                        margin-bottom: 10px;
+                        padding-bottom: 8px;
+                        border-bottom: 1px solid var(--vscode-panel-border);
+                    }
+                    .body-content {
+                        /* Don't use pre-wrap - it preserves template literal indentation */
+                    }
+                    .body-edit textarea {
+                        width: 100%;
+                        min-height: 200px;
+                        padding: 10px;
+                        background: var(--vscode-input-background);
+                        color: var(--vscode-input-foreground);
+                        border: 1px solid var(--vscode-input-border);
+                        border-radius: 4px;
+                        font-family: var(--vscode-editor-font-family);
+                        font-size: var(--vscode-editor-font-size);
+                        resize: vertical;
+                        box-sizing: border-box;
+                    }
+                    .edit-actions {
+                        margin-top: 10px;
+                        display: flex;
+                        gap: 10px;
+                        justify-content: flex-end;
+                    }
                     .comments-section {
                         margin-top: 30px;
                     }
@@ -730,6 +784,28 @@ export class IssueDetailPanel {
                     a {
                         color: var(--vscode-textLink-foreground);
                     }
+                    h1, h2, h3, h4, h5, h6 {
+                        margin: 16px 0 8px 0;
+                        font-weight: 600;
+                    }
+                    h1 { font-size: 1.5em; border-bottom: 1px solid var(--vscode-panel-border); padding-bottom: 8px; }
+                    h2 { font-size: 1.3em; border-bottom: 1px solid var(--vscode-panel-border); padding-bottom: 6px; }
+                    h3 { font-size: 1.15em; }
+                    h4 { font-size: 1em; }
+                    h5 { font-size: 0.9em; }
+                    h6 { font-size: 0.85em; color: var(--vscode-descriptionForeground); }
+                    ul, ol {
+                        margin: 8px 0;
+                        padding-left: 24px;
+                    }
+                    li {
+                        margin: 4px 0;
+                    }
+                    hr {
+                        border: none;
+                        border-top: 1px solid var(--vscode-panel-border);
+                        margin: 16px 0;
+                    }
                 </style>
             </head>
             <body>
@@ -760,7 +836,20 @@ export class IssueDetailPanel {
                 </div>
 
                 <div class="body">
-                    ${details.body ? this._renderMarkdown(details.body) : '<em>No description provided.</em>'}
+                    <div class="body-header">
+                        <strong>Description</strong>
+                        <button class="edit-btn" id="editDescBtn" onclick="startEditDescription()" title="Edit description">✏️</button>
+                    </div>
+                    <div class="body-content" id="bodyView">
+                        ${details.body ? this._renderMarkdown(details.body) : '<em>No description provided.</em>'}
+                    </div>
+                    <div class="body-edit" id="bodyEdit" style="display: none;">
+                        <textarea id="descriptionInput">${this._escapeHtml(details.body || '')}</textarea>
+                        <div class="edit-actions">
+                            <button class="btn btn-secondary" onclick="cancelEditDescription()">Cancel</button>
+                            <button class="btn" onclick="saveDescription()">Save</button>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="comments-section">
@@ -815,6 +904,24 @@ export class IssueDetailPanel {
                     function editAssignees() {
                         vscode.postMessage({ type: 'editAssignees' });
                     }
+
+                    function startEditDescription() {
+                        document.getElementById('bodyView').style.display = 'none';
+                        document.getElementById('bodyEdit').style.display = 'block';
+                        document.getElementById('editDescBtn').style.display = 'none';
+                        document.getElementById('descriptionInput').focus();
+                    }
+
+                    function cancelEditDescription() {
+                        document.getElementById('bodyView').style.display = 'block';
+                        document.getElementById('bodyEdit').style.display = 'none';
+                        document.getElementById('editDescBtn').style.display = '';
+                    }
+
+                    function saveDescription() {
+                        const newBody = document.getElementById('descriptionInput').value;
+                        vscode.postMessage({ type: 'saveDescription', newBody });
+                    }
                 </script>
             </body>
             </html>
@@ -831,7 +938,7 @@ export class IssueDetailPanel {
     }
 
     private _renderMarkdown(text: string): string {
-        // Basic markdown rendering - escape HTML first, then apply markdown
+        // Escape HTML
         let html = this._escapeHtml(text);
 
         // Code blocks
@@ -839,6 +946,17 @@ export class IssueDetailPanel {
 
         // Inline code
         html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+        // Headings (must come before bold/italic and before line break conversion)
+        html = html.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>');
+        html = html.replace(/^#####\s+(.+)$/gm, '<h5>$1</h5>');
+        html = html.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
+        html = html.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
+        html = html.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
+        html = html.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
+
+        // Horizontal rule
+        html = html.replace(/^---$/gm, '<hr>');
 
         // Bold
         html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
@@ -849,7 +967,11 @@ export class IssueDetailPanel {
         // Links
         html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
 
-        // Line breaks
+        // Unordered lists
+        html = html.replace(/^\s*[-*]\s+(.+)$/gm, '<li>$1</li>');
+        html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
+
+        // Line breaks (but not after block elements)
         html = html.replace(/\n/g, '<br>');
 
         return html;

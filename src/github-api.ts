@@ -754,7 +754,7 @@ export class GitHubAPI {
             status,
             url: content?.url || null,
             number: content?.number || null,
-            repository: content?.repository
+            repository: content?.repository?.owner
                 ? `${content.repository.owner.login}/${content.repository.name}`
                 : null,
             assignees,
@@ -1542,6 +1542,61 @@ export class GitHubAPI {
             const errorMessage = error instanceof Error ? error.message : String(error);
             console.error('Failed to add issue to project:', errorMessage);
             throw new Error(`Failed to add issue to project: ${errorMessage}`);
+        }
+    }
+
+    /**
+     * Update an issue's body/description
+     */
+    async updateIssueBody(
+        owner: string,
+        repo: string,
+        issueNumber: number,
+        body: string
+    ): Promise<boolean> {
+        if (!this.graphqlClient) {
+            throw new Error('Not authenticated');
+        }
+
+        try {
+            // First get the issue node ID
+            const issueResponse = await this.graphqlClient<{
+                repository: {
+                    issue: { id: string } | null;
+                };
+            }>(`
+                query($owner: String!, $repo: String!, $number: Int!) {
+                    repository(owner: $owner, name: $repo) {
+                        issue(number: $number) {
+                            id
+                        }
+                    }
+                }
+            `, { owner, repo, number: issueNumber });
+
+            if (!issueResponse.repository.issue) {
+                throw new Error('Issue not found');
+            }
+
+            // Update the issue body
+            await this.graphqlClient(`
+                mutation($issueId: ID!, $body: String!) {
+                    updateIssue(input: { id: $issueId, body: $body }) {
+                        issue {
+                            id
+                        }
+                    }
+                }
+            `, {
+                issueId: issueResponse.repository.issue.id,
+                body,
+            });
+
+            return true;
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            console.error('Failed to update issue body:', errorMessage);
+            throw new Error(`Failed to update issue body: ${errorMessage}`);
         }
     }
 

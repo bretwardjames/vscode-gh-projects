@@ -1,8 +1,25 @@
-import * as vscode from 'vscode';
-import { exec } from 'child_process';
-import { promisify } from 'util';
+/**
+ * Git utilities for VSCode extension.
+ *
+ * Wraps @bretwardjames/ghp-core git functions with VSCode workspace path.
+ */
 
-const execAsync = promisify(exec);
+import * as vscode from 'vscode';
+import {
+    getCurrentBranch as coreGetCurrentBranch,
+    hasUncommittedChanges as coreHasUncommittedChanges,
+    fetchOrigin as coreFetchOrigin,
+    getCommitsBehind as coreGetCommitsBehind,
+    checkoutBranch as coreCheckoutBranch,
+    pullLatest as corePullLatest,
+    createBranch as coreCreateBranch,
+    branchExists as coreBranchExists,
+    sanitizeForBranchName,
+    generateBranchName as coreGenerateBranchName,
+} from '@bretwardjames/ghp-core';
+
+// Re-export pure functions that don't need cwd
+export { sanitizeForBranchName } from '@bretwardjames/ghp-core';
 
 export interface GitStatus {
     currentBranch: string;
@@ -24,51 +41,43 @@ function getWorkspacePath(): string | null {
 }
 
 /**
- * Execute a git command in the workspace
+ * Get git options with VSCode workspace cwd
  */
-async function gitExec(command: string): Promise<string> {
+function getGitOptions(): { cwd: string } {
     const cwd = getWorkspacePath();
     if (!cwd) {
         throw new Error('No workspace folder open');
     }
-
-    const { stdout } = await execAsync(`git ${command}`, { cwd });
-    return stdout.trim();
+    return { cwd };
 }
 
 /**
  * Get the current branch name
  */
 export async function getCurrentBranch(): Promise<string> {
-    return gitExec('rev-parse --abbrev-ref HEAD');
+    const branch = await coreGetCurrentBranch(getGitOptions());
+    return branch || 'HEAD';
 }
 
 /**
  * Check if there are uncommitted changes
  */
 export async function hasUncommittedChanges(): Promise<boolean> {
-    const status = await gitExec('status --porcelain');
-    return status.length > 0;
+    return coreHasUncommittedChanges(getGitOptions());
 }
 
 /**
  * Fetch from origin to get latest refs
  */
 export async function fetchOrigin(): Promise<void> {
-    await gitExec('fetch origin');
+    return coreFetchOrigin(getGitOptions());
 }
 
 /**
  * Check how many commits the local branch is behind origin
  */
 export async function getCommitsBehind(branch: string): Promise<number> {
-    try {
-        const result = await gitExec(`rev-list --count ${branch}..origin/${branch}`);
-        return parseInt(result, 10) || 0;
-    } catch {
-        // Branch might not have an upstream
-        return 0;
-    }
+    return coreGetCommitsBehind(branch, getGitOptions());
 }
 
 /**
@@ -101,55 +110,28 @@ export async function getGitStatus(mainBranch: string): Promise<GitStatus> {
  * Checkout a branch
  */
 export async function checkoutBranch(branch: string): Promise<void> {
-    await gitExec(`checkout ${branch}`);
+    return coreCheckoutBranch(branch, getGitOptions());
 }
 
 /**
  * Pull latest from origin
  */
 export async function pullLatest(): Promise<void> {
-    await gitExec('pull');
+    return corePullLatest(getGitOptions());
 }
 
 /**
  * Create and checkout a new branch
  */
 export async function createBranch(branchName: string): Promise<void> {
-    await gitExec(`checkout -b ${branchName}`);
+    return coreCreateBranch(branchName, getGitOptions());
 }
 
 /**
  * Check if a branch already exists locally or remotely
  */
 export async function branchExists(branchName: string): Promise<boolean> {
-    try {
-        // Check local branches
-        const localResult = await gitExec(`branch --list ${branchName}`);
-        if (localResult.trim()) {
-            return true;
-        }
-
-        // Check remote branches
-        const remoteResult = await gitExec(`branch -r --list origin/${branchName}`);
-        return !!remoteResult.trim();
-    } catch {
-        return false;
-    }
-}
-
-/**
- * Sanitize a string for use in a branch name
- * - Lowercase
- * - Replace spaces and special chars with hyphens
- * - Remove consecutive hyphens
- * - Remove leading/trailing hyphens
- */
-export function sanitizeForBranchName(text: string): string {
-    return text
-        .toLowerCase()
-        .replace(/[^a-z0-9-]/g, '-')  // Replace non-alphanumeric with hyphens
-        .replace(/-+/g, '-')           // Collapse multiple hyphens
-        .replace(/^-|-$/g, '');        // Remove leading/trailing hyphens
+    return coreBranchExists(branchName, getGitOptions());
 }
 
 /**
@@ -165,27 +147,14 @@ export function generateBranchName(
     },
     maxLength: number
 ): string {
-    const sanitizedTitle = sanitizeForBranchName(variables.title);
-
-    let branchName = pattern
-        .replace('{user}', variables.user)
-        .replace('{number}', variables.number?.toString() || 'draft')
-        .replace('{title}', sanitizedTitle)
-        .replace('{repo}', variables.repo ? sanitizeForBranchName(variables.repo.split('/')[1] || '') : '');
-
-    // Truncate if needed, preserving the prefix (user/number-)
-    if (branchName.length > maxLength) {
-        // Find where the title part starts (after user/number-)
-        const prefixMatch = branchName.match(/^[^/]+\/\d+-/);
-        if (prefixMatch) {
-            const prefix = prefixMatch[0];
-            const remainingLength = maxLength - prefix.length;
-            const truncatedTitle = sanitizedTitle.substring(0, remainingLength).replace(/-$/, '');
-            branchName = prefix + truncatedTitle;
-        } else {
-            branchName = branchName.substring(0, maxLength);
-        }
-    }
-
-    return branchName;
+    return coreGenerateBranchName(
+        pattern,
+        {
+            user: variables.user,
+            number: variables.number,
+            title: variables.title,
+            repo: variables.repo || '',
+        },
+        maxLength
+    );
 }
