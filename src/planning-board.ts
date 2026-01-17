@@ -1043,6 +1043,9 @@ export class PlanningBoardPanel {
                         opacity: 0.5;
                         transform: rotate(2deg);
                     }
+                    .card-active {
+                        border-left: 3px solid var(--vscode-charts-green, #2da44e);
+                    }
                     .card-title {
                         font-weight: 500;
                         margin-bottom: 8px;
@@ -1198,6 +1201,9 @@ export class PlanningBoardPanel {
                     }
                     .list-item:hover {
                         border-color: var(--vscode-focusBorder);
+                    }
+                    .list-item-active {
+                        border-left: 3px solid var(--vscode-charts-green, #2da44e);
                     }
                     .list-item-title {
                         flex: 1;
@@ -1464,9 +1470,11 @@ export class PlanningBoardPanel {
         const typeIcon = item.type === 'pr' ? '🔀' : item.type === 'draft' ? '📝' : '🔵';
         const assigneesHtml = this._renderAssignees(item.assignees);
         const fieldsHtml = this._renderFieldBadges(item);
+        const isActive = this._isActiveItem(item);
+        const activeClass = isActive ? ' list-item-active' : '';
 
         return `
-            <div class="list-item">
+            <div class="list-item${activeClass}">
                 <span class="card-type">${typeIcon}</span>
                 <span class="list-item-title" onclick="openItem('${item.id}')">${this._escapeHtml(item.title)}</span>
                 ${fieldsHtml}
@@ -1478,13 +1486,26 @@ export class PlanningBoardPanel {
         `;
     }
 
+    /**
+     * Check if an item has the "active" label indicating it's currently being worked on.
+     */
+    private _isActiveItem(item: NormalizedProjectItem): boolean {
+        if (!this._api?.username) {
+            return false;
+        }
+        const activeLabel = `@${this._api.username}:active`;
+        return item.labels.some(l => l.name === activeLabel);
+    }
+
     private _renderCard(item: NormalizedProjectItem): string {
         const typeIcon = item.type === 'pr' ? '🔀' : item.type === 'draft' ? '📝' : '🔵';
         const assigneesHtml = this._renderAssignees(item.assignees);
         const fieldsHtml = this._renderFieldBadges(item);
+        const isActive = this._isActiveItem(item);
+        const activeClass = isActive ? ' card-active' : '';
 
         return `
-            <div class="card" draggable="true" ondragstart="dragStart(event, '${item.id}')" ondragend="dragEnd(event)" data-item-id="${item.id}">
+            <div class="card${activeClass}" draggable="true" ondragstart="dragStart(event, '${item.id}')" ondragend="dragEnd(event)" data-item-id="${item.id}">
                 <div class="card-title" onclick="openItem('${item.id}')">${this._escapeHtml(item.title)}</div>
                 <div class="card-meta">
                     <span class="card-type">

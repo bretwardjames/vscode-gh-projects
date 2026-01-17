@@ -556,6 +556,10 @@ export class ProjectBoardProvider implements vscode.TreeDataProvider<TreeElement
 
     private async createItemTreeItem(node: ItemNode): Promise<vscode.TreeItem> {
         const { item } = node;
+
+        // Check if this item is the "currently working on" item
+        const isActive = this.isActiveItem(item);
+
         const treeItem = new vscode.TreeItem(item.title, vscode.TreeItemCollapsibleState.None);
 
         // Check for linked branch (only for issues with a number)
@@ -563,7 +567,7 @@ export class ProjectBoardProvider implements vscode.TreeDataProvider<TreeElement
             ? (await this.branchLinker?.getBranchForIssue(item.number)) || null
             : null;
 
-        // Description: repo#number + branch indicator
+        // Description: repo#number + branch indicator + active badge
         let description = '';
         if (item.repository && item.number) {
             description = `${item.repository}#${item.number}`;
@@ -576,14 +580,22 @@ export class ProjectBoardProvider implements vscode.TreeDataProvider<TreeElement
             description += description ? ` $(git-branch) ${linkedBranch}` : `$(git-branch) ${linkedBranch}`;
         }
 
+        // Add subtle active indicator
+        if (isActive) {
+            description = `$(circle-filled) ${description}`;
+        }
+
         treeItem.description = description;
 
-        // Icon based on type and state
-        treeItem.iconPath = this.getItemIcon(item);
+        // Icon based on type and state (with active highlight)
+        treeItem.iconPath = this.getItemIcon(item, isActive);
         treeItem.contextValue = 'projectItem';
 
         // Tooltip with details
         const md = new vscode.MarkdownString();
+        if (isActive) {
+            md.appendMarkdown(`🔥 **Currently Working On**\n\n`);
+        }
         md.appendMarkdown(`**${item.title}**\n\n`);
         if (item.status) md.appendMarkdown(`Status: ${item.status}\n\n`);
         if (item.assignees.length > 0) {
@@ -604,7 +616,22 @@ export class ProjectBoardProvider implements vscode.TreeDataProvider<TreeElement
         return treeItem;
     }
 
-    private getItemIcon(item: NormalizedProjectItem): vscode.ThemeIcon {
+    /**
+     * Check if an item has the "active" label indicating it's currently being worked on.
+     */
+    private isActiveItem(item: NormalizedProjectItem): boolean {
+        if (!this.api?.username) {
+            return false;
+        }
+        const activeLabel = `@${this.api.username}:active`;
+        return item.labels.some(l => l.name === activeLabel);
+    }
+
+    private getItemIcon(item: NormalizedProjectItem, isActive: boolean = false): vscode.ThemeIcon {
+        // Active items get green, inactive get muted grey
+        const activeColor = new vscode.ThemeColor('charts.green');
+        const inactiveColor = new vscode.ThemeColor('descriptionForeground');
+
         if (item.type === 'pr') {
             if (item.state === 'merged') {
                 return new vscode.ThemeIcon('git-merge', new vscode.ThemeColor('charts.purple'));
@@ -612,18 +639,18 @@ export class ProjectBoardProvider implements vscode.TreeDataProvider<TreeElement
             if (item.state === 'closed') {
                 return new vscode.ThemeIcon('git-pull-request-closed', new vscode.ThemeColor('charts.red'));
             }
-            return new vscode.ThemeIcon('git-pull-request', new vscode.ThemeColor('charts.green'));
+            return new vscode.ThemeIcon('git-pull-request', isActive ? activeColor : inactiveColor);
         }
 
         if (item.type === 'draft') {
-            return new vscode.ThemeIcon('note');
+            return new vscode.ThemeIcon('note', isActive ? activeColor : inactiveColor);
         }
 
         // Issue
         if (item.state === 'closed') {
             return new vscode.ThemeIcon('issue-closed', new vscode.ThemeColor('charts.purple'));
         }
-        return new vscode.ThemeIcon('issue-opened', new vscode.ThemeColor('charts.green'));
+        return new vscode.ThemeIcon('issue-opened', isActive ? activeColor : inactiveColor);
     }
 
     private createMessageTreeItem(node: MessageNode): vscode.TreeItem {
