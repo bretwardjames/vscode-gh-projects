@@ -11,3 +11,4 @@ vsc-extension-quickstart.md
 firebase-debug.log
 *.vsix
 node_modules/**
+../**
