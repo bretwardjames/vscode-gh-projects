@@ -2,7 +2,19 @@
 
 All notable changes to the "GitHub Projects" extension will be documented in this file.
 
-## [0.1.7] - 2026-01-17
+## [0.1.9] - 2025-01-17
+
+### Changed
+- Updated README with GHP Tools ecosystem documentation
+- Added install script reference and cross-links to ghp-cli
+
+## [0.1.8] - 2025-01-17
+
+### Fixed
+- Planning Board list view now correctly applies type, label, and state filters
+- Refresh now re-fetches project views to pick up filter changes from GitHub
+
+## [0.1.7] - 2025-01-17
 
 ### Changed
 - Branch links now stored in GitHub issue bodies (shared with CLI)

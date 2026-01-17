@@ -2,6 +2,23 @@
 
 View and manage GitHub Project boards directly in VS Code. This extension mirrors your project views exactly as configured on GitHub, bringing your kanban boards, tables, and roadmaps into your editor.
 
+Part of the [GHP Tools](https://github.com/bretwardjames/ghp-core) suite. Works alongside the [ghp CLI](https://github.com/bretwardjames/ghp-cli) for a complete GitHub Projects workflow.
+
+## Installation
+
+**Quick install (extension + CLI):**
+```bash
+curl -fsSL https://raw.githubusercontent.com/bretwardjames/ghp-core/main/install.sh | bash
+```
+
+**Extension only:**
+Download the `.vsix` from [releases](https://github.com/bretwardjames/vscode-gh-projects/releases) and install:
+```bash
+code --install-extension gh-projects-*.vsix
+# or for Cursor:
+cursor --install-extension gh-projects-*.vsix
+```
+
 ### A note from Bret, the "Developer"
 
 This project was _entirely_ vibe coded by Claude Code. I just know how I want it to work and told it what to do (like a good little vibe coder). Suggestions, contributions, etc are welcome!
@@ -136,6 +153,11 @@ No data is sent to any third-party servers. All communication is directly betwee
 ## Contributing
 
 Found a bug or have a feature request? Please open an issue on [GitHub](https://github.com/bretwardjames/vscode-gh-projects/issues).
+
+## Related
+
+- [ghp-core](https://github.com/bretwardjames/ghp-core) - Shared library and install script
+- [ghp-cli](https://github.com/bretwardjames/ghp-cli) - Command-line interface for GitHub Projects
 
 ## License
 
