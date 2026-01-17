@@ -17,10 +17,12 @@ export interface StartWorkingContext {
 }
 
 /**
- * Execute the "Start Working" workflow
- * 1. Check git status and ensure we're ready to create a branch
- * 2. Create the branch with configured naming
- * 3. Update the project item status if configured
+ * Unified "Start Working" workflow.
+ *
+ * Decision flow:
+ * 1. Issue has linked branch → Checkout that branch (if not already on it), update status/label
+ * 2. Issue NOT linked + on main → Offer: Create new branch OR Link existing branch
+ * 3. Issue NOT linked + NOT on main → Offer: Switch to main & create, Create from current, Link existing
  */
 export async function executeStartWorking(
     api: GitHubAPI,
@@ -33,14 +35,159 @@ export async function executeStartWorking(
     const maxLength = config.get<number>('maxBranchNameLength', 60);
 
     const { item, project } = context;
+    const branchLinker = getBranchLinker();
 
-    // Step 1: Check git status
-    const statusCheckResult = await checkGitStatus(mainBranch);
-    if (!statusCheckResult.success) {
-        return false;
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Step 1: Check if issue has a linked branch
+    // ═══════════════════════════════════════════════════════════════════════════
+    const linkedBranch = item.number ? await branchLinker.getBranchForIssue(item.number) : null;
+
+    if (linkedBranch) {
+        // Issue already has a linked branch - switch to it if needed
+        const status = await getGitStatus(mainBranch);
+
+        if (status.currentBranch === linkedBranch) {
+            vscode.window.showInformationMessage(`Already on branch: ${linkedBranch}`);
+        } else {
+            const result = await branchLinker.switchToBranch(linkedBranch);
+            if (!result.success) {
+                vscode.window.showErrorMessage(result.error || 'Failed to switch branch');
+                return false;
+            }
+            vscode.window.showInformationMessage(`Switched to branch: ${linkedBranch}`);
+        }
+    } else {
+        // ═══════════════════════════════════════════════════════════════════════
+        // Step 2: No linked branch - offer options based on current state
+        // ═══════════════════════════════════════════════════════════════════════
+        const status = await getGitStatus(mainBranch);
+        const isOnMain = status.isOnMainBranch;
+
+        // Build options based on current state
+        let options: string[];
+        if (isOnMain) {
+            options = ['Create new branch', 'Link existing branch'];
+        } else {
+            options = [
+                `Switch to ${mainBranch} & create branch`,
+                `Create from current (${status.currentBranch})`,
+                'Link existing branch',
+            ];
+        }
+
+        const action = await vscode.window.showQuickPick(options, {
+            title: 'No branch linked to this issue',
+            placeHolder: 'Choose an action',
+        });
+
+        if (!action) {
+            return false; // Cancelled
+        }
+
+        if (action === 'Link existing branch') {
+            // Show branch picker with branches sorted by relevance to the issue
+            const branches = await branchLinker.getAllBranches();
+            const nonMainBranches = branches.filter(b => b !== mainBranch);
+
+            if (nonMainBranches.length === 0) {
+                vscode.window.showWarningMessage('No other branches available to link.');
+                return false;
+            }
+
+            // Sort branches by relevance to the issue
+            const sortedBranches = sortBranchesByRelevance(nonMainBranches, item);
+
+            const selected = await vscode.window.showQuickPick(sortedBranches, {
+                title: 'Select branch to link',
+                placeHolder: 'Choose a branch (sorted by relevance)',
+            });
+
+            if (!selected) {
+                return false; // Cancelled
+            }
+
+            // Link the branch
+            if (item.number) {
+                await branchLinker.linkBranch(selected, item.number);
+                vscode.window.showInformationMessage(`Linked "${selected}" to #${item.number}`);
+            }
+
+            // Switch to the branch if not already on it
+            if (status.currentBranch !== selected) {
+                const switchResult = await branchLinker.switchToBranch(selected);
+                if (!switchResult.success) {
+                    vscode.window.showErrorMessage(switchResult.error || 'Failed to switch branch');
+                    return false;
+                }
+            }
+        } else if (action.includes('Create from current') || action === 'Create new branch') {
+            // Create branch from current position
+            const createResult = await createBranchAndLink(
+                api,
+                item,
+                branchPattern,
+                maxLength,
+                branchLinker
+            );
+            if (!createResult) {
+                return false;
+            }
+        } else {
+            // Switch to main & create
+            const switchResult = await branchLinker.switchToBranch(mainBranch);
+            if (!switchResult.success) {
+                vscode.window.showErrorMessage(switchResult.error || `Failed to switch to ${mainBranch}`);
+                return false;
+            }
+
+            // Offer to pull if behind
+            const newStatus = await getGitStatus(mainBranch);
+            if (newStatus.isBehindOrigin) {
+                const shouldPull = await handleBehindOrigin(mainBranch, newStatus.behindCount);
+                if (!shouldPull) {
+                    return false;
+                }
+            }
+
+            // Create branch
+            const createResult = await createBranchAndLink(
+                api,
+                item,
+                branchPattern,
+                maxLength,
+                branchLinker
+            );
+            if (!createResult) {
+                return false;
+            }
+        }
     }
 
-    // Step 2: Generate and create branch
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Step 3: Update project item status if configured
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (targetStatus) {
+        await updateItemStatus(api, project, item, targetStatus);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Step 4: Apply active label to track current work
+    // ═══════════════════════════════════════════════════════════════════════════
+    await applyActiveLabel(api, item);
+
+    return true;
+}
+
+/**
+ * Create a new branch and link it to the issue.
+ */
+async function createBranchAndLink(
+    api: GitHubAPI,
+    item: NormalizedProjectItem,
+    branchPattern: string,
+    maxLength: number,
+    branchLinker: ReturnType<typeof getBranchLinker>
+): Promise<boolean> {
     const branchName = generateBranchName(
         branchPattern,
         {
@@ -64,93 +211,27 @@ export async function executeStartWorking(
             try {
                 await checkoutBranch(branchName);
                 // Auto-link the branch to this issue
-                await linkBranchToIssue(branchName, item);
+                await linkBranchToIssue(branchName, item, branchLinker);
                 vscode.window.showInformationMessage(`Switched to branch: ${branchName}`);
+                return true;
             } catch (error) {
                 vscode.window.showErrorMessage(`Failed to checkout branch: ${error}`);
                 return false;
             }
         }
-        return action === 'Checkout existing branch';
+        return false;
     }
 
     // Create the new branch
     try {
         await createBranch(branchName);
         // Auto-link the branch to this issue
-        await linkBranchToIssue(branchName, item);
+        await linkBranchToIssue(branchName, item, branchLinker);
         vscode.window.showInformationMessage(`Created and switched to branch: ${branchName}`);
+        return true;
     } catch (error) {
         vscode.window.showErrorMessage(`Failed to create branch: ${error}`);
         return false;
-    }
-
-    // Step 3: Update project item status if configured
-    if (targetStatus) {
-        await updateItemStatus(api, project, item, targetStatus);
-    }
-
-    // Step 4: Apply active label to track current work
-    await applyActiveLabel(api, item);
-
-    return true;
-}
-
-/**
- * Check git status and handle any issues interactively
- */
-async function checkGitStatus(mainBranch: string): Promise<{ success: boolean }> {
-    try {
-        const status = await getGitStatus(mainBranch);
-
-        // Check for uncommitted changes
-        if (status.hasUncommittedChanges) {
-            const action = await vscode.window.showWarningMessage(
-                'You have uncommitted changes. Stash or commit them before creating a new branch.',
-                'Continue anyway',
-                'Cancel'
-            );
-            if (action !== 'Continue anyway') {
-                return { success: false };
-            }
-        }
-
-        // Check if on main branch
-        if (!status.isOnMainBranch) {
-            const action = await vscode.window.showWarningMessage(
-                `You're on branch "${status.currentBranch}" instead of "${mainBranch}".`,
-                `Switch to ${mainBranch}`,
-                'Create from current branch',
-                'Cancel'
-            );
-
-            if (action === 'Cancel') {
-                return { success: false };
-            }
-
-            if (action === `Switch to ${mainBranch}`) {
-                try {
-                    await checkoutBranch(mainBranch);
-                    // Re-check status after switching
-                    const newStatus = await getGitStatus(mainBranch);
-                    if (newStatus.isBehindOrigin) {
-                        return await handleBehindOrigin(mainBranch, newStatus.behindCount);
-                    }
-                } catch (error) {
-                    vscode.window.showErrorMessage(`Failed to switch to ${mainBranch}: ${error}`);
-                    return { success: false };
-                }
-            }
-            // If "Create from current branch", continue
-        } else if (status.isBehindOrigin) {
-            // On main but behind origin
-            return await handleBehindOrigin(mainBranch, status.behindCount);
-        }
-
-        return { success: true };
-    } catch (error) {
-        vscode.window.showErrorMessage(`Git status check failed: ${error}`);
-        return { success: false };
     }
 }
 
@@ -160,7 +241,7 @@ async function checkGitStatus(mainBranch: string): Promise<{ success: boolean }>
 async function handleBehindOrigin(
     mainBranch: string,
     behindCount: number
-): Promise<{ success: boolean }> {
+): Promise<boolean> {
     const action = await vscode.window.showWarningMessage(
         `Your ${mainBranch} branch is ${behindCount} commit${behindCount > 1 ? 's' : ''} behind origin.`,
         'Pull latest',
@@ -168,8 +249,8 @@ async function handleBehindOrigin(
         'Cancel'
     );
 
-    if (action === 'Cancel') {
-        return { success: false };
+    if (action === 'Cancel' || !action) {
+        return false;
     }
 
     if (action === 'Pull latest') {
@@ -186,11 +267,11 @@ async function handleBehindOrigin(
             vscode.window.showInformationMessage(`Pulled latest changes from origin/${mainBranch}`);
         } catch (error) {
             vscode.window.showErrorMessage(`Failed to pull: ${error}`);
-            return { success: false };
+            return false;
         }
     }
 
-    return { success: true };
+    return true;
 }
 
 /**
@@ -237,18 +318,62 @@ async function updateItemStatus(
 /**
  * Link a branch to an issue using the BranchLinker
  */
-async function linkBranchToIssue(branchName: string, item: NormalizedProjectItem): Promise<void> {
+async function linkBranchToIssue(
+    branchName: string,
+    item: NormalizedProjectItem,
+    branchLinker: ReturnType<typeof getBranchLinker>
+): Promise<void> {
     if (!item.number) {
         return; // Can't link without issue number
     }
 
     try {
-        const branchLinker = getBranchLinker();
         await branchLinker.linkBranch(branchName, item.number);
     } catch (error) {
         // Non-fatal - just log it
         console.warn('Failed to auto-link branch to issue:', error);
     }
+}
+
+/**
+ * Sort branches by relevance to the issue.
+ * Branches containing the issue number or title keywords are ranked higher.
+ */
+function sortBranchesByRelevance(branches: string[], item: NormalizedProjectItem): string[] {
+    const issueNumber = item.number?.toString() || '';
+    const titleWords = item.title
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, '')
+        .split(/\s+/)
+        .filter(w => w.length > 2); // Skip short words
+
+    return [...branches].sort((a, b) => {
+        const scoreA = getBranchRelevanceScore(a, issueNumber, titleWords);
+        const scoreB = getBranchRelevanceScore(b, issueNumber, titleWords);
+        return scoreB - scoreA; // Higher score first
+    });
+}
+
+/**
+ * Calculate a relevance score for a branch name.
+ */
+function getBranchRelevanceScore(branch: string, issueNumber: string, titleWords: string[]): number {
+    const branchLower = branch.toLowerCase();
+    let score = 0;
+
+    // Strong match: issue number in branch name
+    if (issueNumber && branch.includes(issueNumber)) {
+        score += 100;
+    }
+
+    // Medium match: title words in branch name
+    for (const word of titleWords) {
+        if (branchLower.includes(word)) {
+            score += 10;
+        }
+    }
+
+    return score;
 }
 
 /**

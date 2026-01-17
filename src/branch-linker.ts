@@ -191,6 +191,23 @@ export class BranchLinker {
     }
 
     /**
+     * Get all branches (local + remote, deduplicated).
+     */
+    async getAllBranches(): Promise<string[]> {
+        const [local, remote] = await Promise.all([
+            this.getLocalBranches(),
+            this.getRemoteBranches(),
+        ]);
+
+        // Combine and deduplicate, with local branches first
+        const all = new Set<string>(local);
+        for (const b of remote) {
+            all.add(b);
+        }
+        return Array.from(all);
+    }
+
+    /**
      * Check if the current branch is pushed to remote.
      */
     async isCurrentBranchPushed(): Promise<{ pushed: boolean; branchName: string | null }> {
