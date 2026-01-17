@@ -2,7 +2,7 @@
   "name": "gh-projects",
   "displayName": "GitHub Projects",
   "description": "View GitHub Project boards directly in VS Code - mirrors your project views exactly as configured on GitHub",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "publisher": "bretwardjames",
   "license": "MIT",
   "repository": {
@@ -322,9 +322,12 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run esbuild-base -- --minify",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
+    "esbuild-base": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node",
+    "esbuild": "npm run esbuild-base -- --sourcemap",
+    "esbuild-watch": "npm run esbuild-base -- --sourcemap --watch",
     "lint": "eslint src --ext ts"
   },
   "devDependencies": {
@@ -332,6 +335,7 @@
     "@types/vscode": "^1.85.0",
     "@typescript-eslint/eslint-plugin": "^6.13.0",
     "@typescript-eslint/parser": "^6.13.0",
+    "esbuild": "^0.27.2",
     "eslint": "^8.54.0",
     "typescript": "^5.3.2"
   },

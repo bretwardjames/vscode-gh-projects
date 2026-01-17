@@ -10,4 +10,4 @@ vsc-extension-quickstart.md
 .claude/**
 firebase-debug.log
 *.vsix
-# Include all node_modules (dependencies have transitive deps)
+node_modules/**
