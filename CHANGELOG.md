@@ -2,6 +2,11 @@
 
 All notable changes to the "GitHub Projects" extension will be documented in this file.
 
+## [0.1.12] - 2025-01-17
+
+### Added
+- Assignment check on Start Working - prompts to reassign/add yourself if not assigned
+
 ## [0.1.11] - 2025-01-17
 
 ### Fixed
