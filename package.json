@@ -2,7 +2,7 @@
   "name": "gh-projects",
   "displayName": "GitHub Projects",
   "description": "View GitHub Project boards directly in VS Code - mirrors your project views exactly as configured on GitHub",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "publisher": "bretwardjames",
   "license": "MIT",
   "repository": {
@@ -74,6 +74,12 @@
         "command": "ghProjects.configureProject",
         "title": "Settings",
         "icon": "$(gear)",
+        "category": "GitHub Projects"
+      },
+      {
+        "command": "ghProjects.syncSettings",
+        "title": "Sync Settings with CLI",
+        "icon": "$(sync)",
         "category": "GitHub Projects"
       },
       {

@@ -8,6 +8,7 @@ import { IssueDetailPanel } from './issue-detail-panel';
 import { PlanningBoardPanel } from './planning-board';
 import { executePROpened } from './pr-workflow';
 import { BranchLinker } from './branch-linker';
+import { executeSyncSettings } from './settings-sync';
 
 let api: GitHubAPI;
 let boardProvider: ProjectBoardProvider;
@@ -176,6 +177,10 @@ function registerCommands(context: vscode.ExtensionContext) {
 
         vscode.commands.registerCommand('ghProjects.configureProject', async () => {
             await vscode.commands.executeCommand('workbench.action.openSettings', 'ghProjects');
+        }),
+
+        vscode.commands.registerCommand('ghProjects.syncSettings', async () => {
+            await executeSyncSettings();
         }),
 
         vscode.commands.registerCommand('ghProjects.openProjectInBrowser', async (url: string) => {
