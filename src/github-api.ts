@@ -285,7 +285,7 @@ export class GitHubAPI {
 
         // Normalize and filter items
         let normalized = allItems.map((item) =>
-            this.normalizeItem(item, options.statusFieldName || 'Status')
+            this.normalizeItem(item, options.statusFieldName || 'Status', projectId)
         );
 
         if (options.assignedToMe && this.currentUser) {
@@ -686,7 +686,7 @@ export class GitHubAPI {
     /**
      * Convert raw API response to normalized format
      */
-    private normalizeItem(item: ProjectV2Item, _statusFieldName: string): NormalizedProjectItem {
+    private normalizeItem(item: ProjectV2Item, _statusFieldName: string, projectId: string): NormalizedProjectItem {
         const fields = new Map<string, { value: string; color: string | null }>();
         let status: string | null = null;
 
@@ -762,6 +762,7 @@ export class GitHubAPI {
             state,
             fields,
             issueType,
+            projectId,
         };
     }
 
@@ -933,11 +934,12 @@ export class GitHubAPI {
     }
 
     /**
-     * Get all single-select fields for a project with their options
+     * Get all fields for a project with their options (for single-select) and type info
      */
     async getProjectFields(projectId: string): Promise<Array<{
         id: string;
         name: string;
+        type: string;
         options: Array<{ id: string; name: string }>;
     }>> {
         if (!this.graphqlClient) {
@@ -950,6 +952,11 @@ export class GitHubAPI {
                     ... on ProjectV2 {
                         fields(first: 30) {
                             nodes {
+                                ... on ProjectV2Field {
+                                    __typename
+                                    id
+                                    name
+                                }
                                 ... on ProjectV2SingleSelectField {
                                     __typename
                                     id
@@ -981,10 +988,11 @@ export class GitHubAPI {
             }>(query, { projectId });
 
             return response.node.fields.nodes
-                .filter((f) => f.__typename === 'ProjectV2SingleSelectField' && f.id && f.name)
+                .filter((f) => f.id && f.name && f.__typename)
                 .map((f) => ({
                     id: f.id!,
                     name: f.name!,
+                    type: f.__typename!.replace('ProjectV2', '').replace('Field', ''),
                     options: f.options || [],
                 }));
         } catch (error) {
@@ -1374,14 +1382,65 @@ export class GitHubAPI {
     }
 
     /**
-     * Get available issue types for an organization
+     * Get available issue types for a repository
      * Note: Issue types require special GraphQL header - not yet supported
      */
-    async getIssueTypes(_owner: string): Promise<Array<{ id: string; name: string }>> {
+    async getIssueTypes(_owner: string, _repo: string): Promise<Array<{ id: string; name: string }>> {
         // Issue types API requires 'GraphQL-Features: issue_types' header
         // which our graphql client doesn't easily support yet
         // For now, return empty - issue types are fetched from individual items
         return [];
+    }
+
+    /**
+     * Set issue type on an issue
+     * Note: Not yet supported due to GraphQL header requirements
+     */
+    async setIssueType(_owner: string, _repo: string, _issueNumber: number, _issueTypeId: string): Promise<boolean> {
+        // Issue types API requires special GraphQL header
+        // For now, return false - not supported
+        return false;
+    }
+
+    /**
+     * Set a field value on a project item
+     */
+    async setFieldValue(
+        projectId: string,
+        itemId: string,
+        fieldId: string,
+        value: { text?: string; number?: number; singleSelectOptionId?: string }
+    ): Promise<boolean> {
+        if (!this.graphqlClient) {
+            throw new Error('Not authenticated');
+        }
+
+        try {
+            const mutation = `
+                mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: ProjectV2FieldValue!) {
+                    updateProjectV2ItemFieldValue(input: {
+                        projectId: $projectId
+                        itemId: $itemId
+                        fieldId: $fieldId
+                        value: $value
+                    }) {
+                        clientMutationId
+                    }
+                }
+            `;
+
+            await this.graphqlClient(mutation, {
+                projectId,
+                itemId,
+                fieldId,
+                value,
+            });
+
+            return true;
+        } catch (error) {
+            console.error('Failed to set field value:', error);
+            return false;
+        }
     }
 
     /**
