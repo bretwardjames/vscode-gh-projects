@@ -423,7 +423,14 @@ export class PlanningBoardPanel {
                 await this._createIssue(
                     message.title as string,
                     message.body as string,
-                    message.template as string | null
+                    message.template as string | null,
+                    {
+                        labels: message.labels as string | undefined,
+                        assignees: message.assignees as string | undefined,
+                        type: message.type as string | undefined,
+                        status: message.status as string | undefined,
+                        fields: message.fields as Record<string, string> | undefined,
+                    }
                 );
                 break;
 
@@ -581,7 +588,18 @@ export class PlanningBoardPanel {
         };
     }
 
-    private async _createIssue(title: string, body: string, _templateName: string | null): Promise<void> {
+    private async _createIssue(
+        title: string,
+        body: string,
+        _templateName: string | null,
+        metadata?: {
+            labels?: string;
+            assignees?: string;
+            type?: string;
+            status?: string;
+            fields?: Record<string, string>;
+        }
+    ): Promise<void> {
         if (!title.trim()) {
             vscode.window.showErrorMessage('Issue title is required');
             return;
@@ -633,8 +651,64 @@ export class PlanningBoardPanel {
             const issue = await this._api.createIssue(owner, repo, title, body);
 
             if (issue) {
+                // Apply labels
+                if (metadata?.labels) {
+                    const labels = metadata.labels.split(',').map(l => l.trim()).filter(Boolean);
+                    for (const label of labels) {
+                        await this._api.ensureLabel(owner, repo, label, '1f883d', '');
+                        await this._api.addLabelToIssue(owner, repo, issue.number, label);
+                    }
+                }
+
+                // Apply assignees
+                if (metadata?.assignees) {
+                    const assignees = metadata.assignees.split(',').map(a => a.trim()).filter(Boolean);
+                    if (assignees.length > 0) {
+                        await this._api.updateAssignees(owner, repo, issue.number, assignees, 'issue');
+                    }
+                }
+
+                // Apply issue type
+                if (metadata?.type) {
+                    const issueTypes = await this._api.getIssueTypes(owner, repo);
+                    const issueType = issueTypes.find(t =>
+                        t.name.toLowerCase() === metadata.type!.toLowerCase()
+                    );
+                    if (issueType) {
+                        await this._api.setIssueType(owner, repo, issue.number, issueType.id);
+                    }
+                }
+
                 // Add to project
-                await this._api.addIssueToProject(project.id, issue.id);
+                const itemId = await this._api.addIssueToProject(project.id, issue.id);
+
+                // Set initial status and other project fields
+                if (itemId) {
+                    const statusName = metadata?.status;
+                    if (statusName) {
+                        await this._api.updateItemStatusByName(project.id, itemId, statusName);
+                    }
+
+                    // Set other project fields
+                    if (metadata?.fields) {
+                        const projectFields = await this._api.getProjectFields(project.id);
+                        for (const [fieldName, fieldValue] of Object.entries(metadata.fields)) {
+                            const field = projectFields.find(f =>
+                                f.name.toLowerCase() === fieldName.toLowerCase()
+                            );
+                            if (field && field.type === 'SingleSelect' && field.options) {
+                                const option = field.options.find(o =>
+                                    o.name.toLowerCase() === fieldValue.toLowerCase()
+                                );
+                                if (option) {
+                                    await this._api.setFieldValue(project.id, itemId, field.id, { singleSelectOptionId: option.id });
+                                }
+                            } else if (field && (field.type === '' || field.type === 'Text')) {
+                                await this._api.setFieldValue(project.id, itemId, field.id, { text: fieldValue });
+                            }
+                        }
+                    }
+                }
 
                 vscode.window.showInformationMessage(`Issue #${issue.number} created and added to project`);
 
@@ -774,6 +848,31 @@ export class PlanningBoardPanel {
                         <textarea id="body" placeholder="Describe the issue..."></textarea>
                     </div>
 
+                    <details class="metadata-section" style="margin-top: 16px;">
+                        <summary style="cursor: pointer; user-select: none;">Additional Options</summary>
+                        <div style="padding-top: 12px;">
+                            <div class="form-group">
+                                <label for="labels">Labels</label>
+                                <input type="text" id="labels" placeholder="bug, enhancement (comma-separated)" />
+                            </div>
+
+                            <div class="form-group">
+                                <label for="assignees">Assignees</label>
+                                <input type="text" id="assignees" placeholder="username1, username2 (comma-separated)" />
+                            </div>
+
+                            <div class="form-group">
+                                <label for="issueType">Issue Type</label>
+                                <input type="text" id="issueType" placeholder="Bug, Feature, etc." />
+                            </div>
+
+                            <div class="form-group">
+                                <label for="initialStatus">Initial Status</label>
+                                <input type="text" id="initialStatus" placeholder="Todo, In Progress, etc." />
+                            </div>
+                        </div>
+                    </details>
+
                     <div class="button-row">
                         <button class="btn btn-primary" onclick="createIssue()">Create Issue</button>
                         <button class="btn btn-secondary" onclick="cancel()">Cancel</button>
@@ -801,12 +900,20 @@ export class PlanningBoardPanel {
                         const title = document.getElementById('title').value;
                         const body = document.getElementById('body').value;
                         const template = document.getElementById('template')?.value || null;
+                        const labels = document.getElementById('labels')?.value || '';
+                        const assignees = document.getElementById('assignees')?.value || '';
+                        const issueType = document.getElementById('issueType')?.value || '';
+                        const initialStatus = document.getElementById('initialStatus')?.value || '';
 
                         vscode.postMessage({
                             type: 'createIssue',
                             title,
                             body,
-                            template
+                            template,
+                            labels: labels || undefined,
+                            assignees: assignees || undefined,
+                            type: issueType || undefined,
+                            status: initialStatus || undefined
                         });
                     }
 

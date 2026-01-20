@@ -93,6 +93,7 @@ export interface NormalizedProjectItem {
     state: 'open' | 'closed' | 'merged' | null;
     fields: Map<string, import('@bretwardjames/ghp-core').FieldInfo>;
     issueType: string | null;
+    projectId: string;
 }
 
 /**
