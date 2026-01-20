@@ -285,7 +285,7 @@ export class GitHubAPI {
 
         // Normalize and filter items
         let normalized = allItems.map((item) =>
-            this.normalizeItem(item, options.statusFieldName || 'Status')
+            this.normalizeItem(item, options.statusFieldName || 'Status', projectId)
         );
 
         if (options.assignedToMe && this.currentUser) {
@@ -686,7 +686,7 @@ export class GitHubAPI {
     /**
      * Convert raw API response to normalized format
      */
-    private normalizeItem(item: ProjectV2Item, _statusFieldName: string): NormalizedProjectItem {
+    private normalizeItem(item: ProjectV2Item, _statusFieldName: string, projectId: string): NormalizedProjectItem {
         const fields = new Map<string, { value: string; color: string | null }>();
         let status: string | null = null;
 
@@ -762,6 +762,7 @@ export class GitHubAPI {
             state,
             fields,
             issueType,
+            projectId,
         };
     }
 
@@ -938,6 +939,7 @@ export class GitHubAPI {
     async getProjectFields(projectId: string): Promise<Array<{
         id: string;
         name: string;
+        type: string;
         options: Array<{ id: string; name: string }>;
     }>> {
         if (!this.graphqlClient) {
@@ -950,6 +952,11 @@ export class GitHubAPI {
                     ... on ProjectV2 {
                         fields(first: 30) {
                             nodes {
+                                ... on ProjectV2Field {
+                                    __typename
+                                    id
+                                    name
+                                }
                                 ... on ProjectV2SingleSelectField {
                                     __typename
                                     id
@@ -981,10 +988,11 @@ export class GitHubAPI {
             }>(query, { projectId });
 
             return response.node.fields.nodes
-                .filter((f) => f.__typename === 'ProjectV2SingleSelectField' && f.id && f.name)
+                .filter((f) => f.id && f.name && f.__typename)
                 .map((f) => ({
                     id: f.id!,
                     name: f.name!,
+                    type: f.__typename!.replace('ProjectV2', '').replace('Field', ''),
                     options: f.options || [],
                 }));
         } catch (error) {
@@ -1377,11 +1385,62 @@ export class GitHubAPI {
      * Get available issue types for an organization
      * Note: Issue types require special GraphQL header - not yet supported
      */
-    async getIssueTypes(_owner: string): Promise<Array<{ id: string; name: string }>> {
+    async getIssueTypes(_owner: string, _repo: string): Promise<Array<{ id: string; name: string }>> {
         // Issue types API requires 'GraphQL-Features: issue_types' header
         // which our graphql client doesn't easily support yet
         // For now, return empty - issue types are fetched from individual items
         return [];
+    }
+
+    /**
+     * Set issue type on an issue
+     * Note: Not yet supported due to GraphQL header requirements
+     */
+    async setIssueType(_owner: string, _repo: string, _issueNumber: number, _issueTypeId: string): Promise<boolean> {
+        // Issue types API requires special GraphQL header
+        // For now, return false - not supported
+        return false;
+    }
+
+    /**
+     * Set a field value on a project item
+     */
+    async setFieldValue(
+        projectId: string,
+        itemId: string,
+        fieldId: string,
+        value: { text?: string; number?: number; singleSelectOptionId?: string }
+    ): Promise<boolean> {
+        if (!this.graphqlClient) {
+            throw new Error('Not authenticated');
+        }
+
+        try {
+            const mutation = `
+                mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: ProjectV2FieldValue!) {
+                    updateProjectV2ItemFieldValue(input: {
+                        projectId: $projectId
+                        itemId: $itemId
+                        fieldId: $fieldId
+                        value: $value
+                    }) {
+                        clientMutationId
+                    }
+                }
+            `;
+
+            await this.graphqlClient(mutation, {
+                projectId,
+                itemId,
+                fieldId,
+                value,
+            });
+
+            return true;
+        } catch (error) {
+            console.error('Failed to set field value:', error);
+            return false;
+        }
     }
 
     /**
@@ -1876,17 +1935,119 @@ export class GitHubAPI {
     }
 
     /**
-     * Transfer the active label from any other issues to the specified issue
-     * This ensures only one issue has the active label at a time
+     * Find all project items with a specific label across all repos in the project.
+     * Returns items with their issue number and repo info for cross-repo label management.
+     */
+    async findProjectItemsWithLabel(projectId: string, labelName: string): Promise<Array<{
+        number: number;
+        owner: string;
+        repo: string;
+    }>> {
+        if (!this.graphqlClient) {
+            throw new Error('Not authenticated');
+        }
+
+        try {
+            const response = await this.graphqlClient<{
+                node: {
+                    items: {
+                        nodes: Array<{
+                            content: {
+                                __typename: string;
+                                number?: number;
+                                labels?: { nodes: Array<{ name: string }> };
+                                repository?: {
+                                    name: string;
+                                    owner: { login: string };
+                                };
+                            } | null;
+                        }>;
+                    };
+                } | null;
+            }>(`
+                query($projectId: ID!) {
+                    node(id: $projectId) {
+                        ... on ProjectV2 {
+                            items(first: 100) {
+                                nodes {
+                                    content {
+                                        __typename
+                                        ... on Issue {
+                                            number
+                                            labels(first: 10) { nodes { name } }
+                                            repository {
+                                                name
+                                                owner { login }
+                                            }
+                                        }
+                                        ... on PullRequest {
+                                            number
+                                            labels(first: 10) { nodes { name } }
+                                            repository {
+                                                name
+                                                owner { login }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            `, { projectId });
+
+            if (!response.node?.items) {
+                return [];
+            }
+
+            const results: Array<{ number: number; owner: string; repo: string }> = [];
+
+            for (const item of response.node.items.nodes) {
+                const content = item.content;
+                if (!content || content.__typename === 'DraftIssue') continue;
+                if (!content.number || !content.repository || !content.labels) continue;
+
+                const hasLabel = content.labels.nodes.some(
+                    l => l.name.toLowerCase() === labelName.toLowerCase()
+                );
+
+                if (hasLabel) {
+                    results.push({
+                        number: content.number,
+                        owner: content.repository.owner.login,
+                        repo: content.repository.name,
+                    });
+                }
+            }
+
+            return results;
+        } catch (error) {
+            console.error('Failed to find project items with label:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Transfer the active label from any other issues to the specified issue.
+     * This ensures only one issue has the active label at a time.
+     *
+     * NOTE: This mirrors the logic in ghp-core's GitHubAPI.transferActiveLabel().
+     * The extension has its own implementation because it uses VSCode's auth provider
+     * rather than ghp-core's authentication mechanism.
+     *
+     * @param projectId Optional - if provided and activeLabelScope is 'project', syncs across all repos in project
      */
     async transferActiveLabel(
         owner: string,
         repo: string,
-        targetIssueNumber: number
+        targetIssueNumber: number,
+        projectId?: string
     ): Promise<boolean> {
         const labelName = this.getActiveLabelName();
+        const config = vscode.workspace.getConfiguration('ghProjects');
+        const scope = config.get<string>('activeLabelScope') || 'repo';
 
-        // Ensure the label exists
+        // Ensure the label exists in the target repo
         await this.ensureLabel(
             owner,
             repo,
@@ -1895,13 +2056,32 @@ export class GitHubAPI {
             `Currently active issue for @${this.currentUser}`
         );
 
-        // Find other issues with this label
-        const issuesWithLabel = await this.findIssuesWithLabel(owner, repo, labelName);
+        if (scope === 'project' && projectId) {
+            // Project scope: remove from all repos in the project
+            const itemsWithLabel = await this.findProjectItemsWithLabel(projectId, labelName);
 
-        // Remove label from other issues
-        for (const issue of issuesWithLabel) {
-            if (issue.number !== targetIssueNumber) {
-                await this.removeLabelFromIssue(owner, repo, issue.number, labelName);
+            for (const item of itemsWithLabel) {
+                if (item.number === targetIssueNumber && item.owner === owner && item.repo === repo) {
+                    continue;
+                }
+                // Ensure label exists in the other repo before removing
+                await this.ensureLabel(
+                    item.owner,
+                    item.repo,
+                    labelName,
+                    '1d76db',
+                    `Currently active issue for @${this.currentUser}`
+                );
+                await this.removeLabelFromIssue(item.owner, item.repo, item.number, labelName);
+            }
+        } else {
+            // Repo scope: only remove from issues in the same repo
+            const issuesWithLabel = await this.findIssuesWithLabel(owner, repo, labelName);
+
+            for (const issue of issuesWithLabel) {
+                if (issue.number !== targetIssueNumber) {
+                    await this.removeLabelFromIssue(owner, repo, issue.number, labelName);
+                }
             }
         }
 

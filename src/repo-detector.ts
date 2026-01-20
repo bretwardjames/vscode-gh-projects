@@ -11,6 +11,46 @@ export interface RepoInfo {
 }
 
 /**
+ * Parse a repo string in "owner/name" format to RepoInfo
+ */
+export function parseRepoString(repoString: string): RepoInfo | null {
+    if (!repoString) return null;
+
+    const parts = repoString.split('/');
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+        return null;
+    }
+    return {
+        owner: parts[0],
+        name: parts[1],
+        fullName: repoString,
+    };
+}
+
+/**
+ * Resolve target repository using the following priority:
+ * 1. ghProjects.defaultRepo config setting (if set)
+ * 2. Detect from current workspace git remote
+ */
+export async function resolveTargetRepo(): Promise<RepoInfo | null> {
+    // 1. Check config setting
+    const config = vscode.workspace.getConfiguration('ghProjects');
+    const defaultRepo = config.get<string>('defaultRepo');
+
+    if (defaultRepo) {
+        const parsed = parseRepoString(defaultRepo);
+        if (parsed) {
+            return parsed;
+        }
+        // Invalid format - log warning and fall through to detection
+        console.warn(`Invalid defaultRepo format: "${defaultRepo}". Expected "owner/name".`);
+    }
+
+    // 2. Fall back to workspace detection
+    return detectRepository();
+}
+
+/**
  * Detects the GitHub repository from the current workspace
  * by parsing git remote URLs
  */

@@ -237,6 +237,12 @@
     "configuration": {
       "title": "GitHub Projects",
       "properties": {
+        "ghProjects.defaultRepo": {
+          "type": "string",
+          "default": "",
+          "description": "Default repository to use (owner/name format, e.g., 'myorg/myrepo'). When set, the extension will use this repo instead of detecting from git. Useful for multi-repo projects.",
+          "pattern": "^$|^[\\w.-]+/[\\w.-]+$"
+        },
         "ghProjects.showOnlyAssignedToMe": {
           "type": "boolean",
           "default": false,
@@ -328,6 +334,12 @@
           "type": "boolean",
           "default": true,
           "description": "Show the 'Switch to Branch' button in the sidebar. When false, use 'Start Working' to switch to linked branches."
+        },
+        "ghProjects.activeLabelScope": {
+          "type": "string",
+          "enum": ["repo", "project"],
+          "default": "repo",
+          "description": "Scope for the @user:active label. 'repo' = each repo has its own active issue (default), 'project' = only one active issue across all repos in a project."
         }
       }
     }

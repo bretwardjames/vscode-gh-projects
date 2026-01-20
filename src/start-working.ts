@@ -438,7 +438,7 @@ async function applyActiveLabel(api: GitHubAPI, item: NormalizedProjectItem): Pr
     }
 
     try {
-        const success = await api.transferActiveLabel(owner, repo, item.number);
+        const success = await api.transferActiveLabel(owner, repo, item.number, item.projectId);
         if (success) {
             const labelName = api.getActiveLabelName();
             console.log(`Applied ${labelName} label to #${item.number}`);
