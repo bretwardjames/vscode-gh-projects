@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { GitHubAPI } from './github-api';
 import { ProjectBoardProvider, ItemNode, ViewNode, ProjectItemDragAndDropController } from './tree-provider';
-import { detectRepository, type RepoInfo } from './repo-detector';
+import { detectRepository, resolveTargetRepo, type RepoInfo } from './repo-detector';
 import { StatusBarManager, showAccessHelp } from './status-bar';
 import { executeStartWorking } from './start-working';
 import { IssueDetailPanel } from './issue-detail-panel';
@@ -54,7 +54,10 @@ export async function activate(context: vscode.ExtensionContext) {
             await loadProjects();
         }),
         vscode.workspace.onDidChangeConfiguration(async (e) => {
-            if (e.affectsConfiguration('ghProjects')) {
+            if (e.affectsConfiguration('ghProjects.defaultRepo')) {
+                // Repo changed - reload projects from the new repo
+                await loadProjects();
+            } else if (e.affectsConfiguration('ghProjects')) {
                 boardProvider.refresh();
             }
         })
@@ -235,7 +238,7 @@ function registerCommands(context: vscode.ExtensionContext) {
                 output.appendLine('');
 
                 // Test current repo
-                const repo = await detectRepository();
+                const repo = await resolveTargetRepo();
                 if (repo) {
                     output.appendLine(`📁 Current repository: ${repo.fullName}`);
                     output.appendLine('');
@@ -614,8 +617,8 @@ async function loadProjects() {
     statusBar.setLoading();
     boardProvider.setLoading(true);
 
-    // Detect current repository
-    currentRepo = await detectRepository();
+    // Resolve target repository (config.defaultRepo > git detection)
+    currentRepo = await resolveTargetRepo();
 
     if (!currentRepo) {
         statusBar.setNoRepo();

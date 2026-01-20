@@ -237,6 +237,12 @@
     "configuration": {
       "title": "GitHub Projects",
       "properties": {
+        "ghProjects.defaultRepo": {
+          "type": "string",
+          "default": "",
+          "description": "Default repository to use (owner/name format, e.g., 'myorg/myrepo'). When set, the extension will use this repo instead of detecting from git. Useful for multi-repo projects.",
+          "pattern": "^$|^[\\w.-]+/[\\w.-]+$"
+        },
         "ghProjects.showOnlyAssignedToMe": {
           "type": "boolean",
           "default": false,
