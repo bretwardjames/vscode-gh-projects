@@ -1876,13 +1876,109 @@ export class GitHubAPI {
     }
 
     /**
-     * Transfer the active label from any other issues to the specified issue
-     * This ensures only one issue has the active label at a time
+     * Find all project items with a specific label across all repos in the project.
+     * Returns items with their issue number and repo info for cross-repo label management.
+     */
+    async findProjectItemsWithLabel(projectId: string, labelName: string): Promise<Array<{
+        number: number;
+        owner: string;
+        repo: string;
+    }>> {
+        if (!this.graphqlClient) {
+            throw new Error('Not authenticated');
+        }
+
+        try {
+            const response = await this.graphqlClient<{
+                node: {
+                    items: {
+                        nodes: Array<{
+                            content: {
+                                __typename: string;
+                                number?: number;
+                                labels?: { nodes: Array<{ name: string }> };
+                                repository?: {
+                                    name: string;
+                                    owner: { login: string };
+                                };
+                            } | null;
+                        }>;
+                    };
+                } | null;
+            }>(`
+                query($projectId: ID!) {
+                    node(id: $projectId) {
+                        ... on ProjectV2 {
+                            items(first: 100) {
+                                nodes {
+                                    content {
+                                        __typename
+                                        ... on Issue {
+                                            number
+                                            labels(first: 10) { nodes { name } }
+                                            repository {
+                                                name
+                                                owner { login }
+                                            }
+                                        }
+                                        ... on PullRequest {
+                                            number
+                                            labels(first: 10) { nodes { name } }
+                                            repository {
+                                                name
+                                                owner { login }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            `, { projectId });
+
+            if (!response.node?.items) {
+                return [];
+            }
+
+            const results: Array<{ number: number; owner: string; repo: string }> = [];
+
+            for (const item of response.node.items.nodes) {
+                const content = item.content;
+                if (!content || content.__typename === 'DraftIssue') continue;
+                if (!content.number || !content.repository || !content.labels) continue;
+
+                const hasLabel = content.labels.nodes.some(
+                    l => l.name.toLowerCase() === labelName.toLowerCase()
+                );
+
+                if (hasLabel) {
+                    results.push({
+                        number: content.number,
+                        owner: content.repository.owner.login,
+                        repo: content.repository.name,
+                    });
+                }
+            }
+
+            return results;
+        } catch (error) {
+            console.error('Failed to find project items with label:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Transfer the active label from any other issues to the specified issue.
+     * This ensures only one issue has the active label at a time.
+     * @param scope 'repo' to only manage labels within the same repo, 'project' to manage across all repos in the project
      */
     async transferActiveLabel(
         owner: string,
         repo: string,
-        targetIssueNumber: number
+        targetIssueNumber: number,
+        scope: 'repo' | 'project' = 'repo',
+        projectId?: string
     ): Promise<boolean> {
         const labelName = this.getActiveLabelName();
 
@@ -1895,13 +1991,32 @@ export class GitHubAPI {
             `Currently active issue for @${this.currentUser}`
         );
 
-        // Find other issues with this label
-        const issuesWithLabel = await this.findIssuesWithLabel(owner, repo, labelName);
+        if (scope === 'project' && projectId) {
+            // Project scope: remove from all repos in the project
+            const itemsWithLabel = await this.findProjectItemsWithLabel(projectId, labelName);
 
-        // Remove label from other issues
-        for (const issue of issuesWithLabel) {
-            if (issue.number !== targetIssueNumber) {
-                await this.removeLabelFromIssue(owner, repo, issue.number, labelName);
+            for (const item of itemsWithLabel) {
+                if (item.number === targetIssueNumber && item.owner === owner && item.repo === repo) {
+                    continue;
+                }
+                // Ensure label exists in the other repo before removing
+                await this.ensureLabel(
+                    item.owner,
+                    item.repo,
+                    labelName,
+                    '1d76db',
+                    `Currently active issue for @${this.currentUser}`
+                );
+                await this.removeLabelFromIssue(item.owner, item.repo, item.number, labelName);
+            }
+        } else {
+            // Repo scope: only remove from issues in the same repo
+            const issuesWithLabel = await this.findIssuesWithLabel(owner, repo, labelName);
+
+            for (const issue of issuesWithLabel) {
+                if (issue.number !== targetIssueNumber) {
+                    await this.removeLabelFromIssue(owner, repo, issue.number, labelName);
+                }
             }
         }
 
