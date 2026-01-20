@@ -1,3 +1,6 @@
+> **Note**: This repository has moved to [github.com/bretwardjames/ghp](https://github.com/bretwardjames/ghp).
+> This repo is archived and no longer maintained.
+
 # GitHub Projects for VS Code
 
 View and manage GitHub Project boards directly in VS Code. This extension mirrors your project views exactly as configured on GitHub, bringing your kanban boards, tables, and roadmaps into your editor.
